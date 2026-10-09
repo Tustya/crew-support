@@ -1,0 +1,74 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Manrope', Arial, sans-serif;
+  --color-canvas: #f4f6fa;
+  --color-surface: #ffffff;
+  --color-muted: #eaf0f6;
+  --color-ink: #003478;
+  --color-ink-soft: #526b91;
+  --color-brand: #109fd9;
+  --color-brand-strong: #007cb5;
+  --color-brand-soft: #ddf2fb;
+  --color-accent: #c4006a;
+  --color-line: #dbe4ef;
+  --color-ok: #147d56;
+  --color-warn: #9a6200;
+  --color-danger: #b42318;
+  --shadow-card: 0 8px 24px rgb(0 52 120 / 0.05);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-brand-strong);
+  outline-offset: 2px;
+}
+
+.email-change {
+  color: #b42318;
+  font-style: italic;
+}
+
+.shell-body {
+  display: block;
+}
+
+@media (min-width: 768px) {
+  .shell-body {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1366px) {
+  .shell-body {
+    grid-template-columns: 224px minmax(0, 1fr);
+  }
+}

@@ -25,6 +25,7 @@ function booking(patch: Partial<Booking> = {}): Booking {
     departureLocalDate: '2026-10-09',
     departureLocalTime: '21:10',
     roomType: 'SGL',
+    gender: 'F',
     recordStatus: 'active',
     ...patch,
   }
@@ -48,7 +49,8 @@ describe('сравнение и очередь', () => {
     const calm = loadScenario('calm', settings, 'specialist')
     const shifted = { ...calm, clockIso: addMinutes(calm.clockIso, 12) }
     const next = patchLatest(shifted, 'b-svx-1', { arrivalLocalTime: '18:10' })
-    expect(next.groupTimers['hotel-angel|SVX|2026-10-09'].dueAt).toBe(addMinutes(shifted.clockIso, settings.quietMinutes))
+    expect(next.groupTimers['hotel-angel|SVX|2026-10-09'].dueAt).toBe(calm.groupTimers['hotel-angel|SVX|2026-10-09'].dueAt)
+    expect(next.groupTimers['hotel-angel|SVX|2026-10-09'].lastChangeAt).toBe(shifted.clockIso)
     expect(next.groupTimers['hotel-neva|LED|2026-10-09']).toBeUndefined()
   })
 

@@ -183,6 +183,9 @@ export const useDemoStore = create<DemoStore>()(
           data: {
             ...saved.data,
             settings: { ...defaultSettings(), ...saved.data.settings, requireHumanReview: true },
+            groupTimers: Object.fromEntries(
+              Object.entries(saved.data.groupTimers ?? {}).map(([key, timer]) => [key, { ...timer, quietStartedAt: timer.quietStartedAt || timer.lastChangeAt }]),
+            ),
             clockPaused: true,
             checking: false,
             sendingDraftId: null,

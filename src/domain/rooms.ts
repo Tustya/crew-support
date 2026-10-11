@@ -25,10 +25,11 @@ function pairDoubles(doubles: Booking[], keptPairs: string[][]): Booking[][] {
   const doublesById = new Map(doubles.map((booking) => [booking.id, booking]))
   const keptRooms = keptPairs
     .map((pair) => pair.map((bookingId) => doublesById.get(bookingId)))
-    .filter((pair): pair is Booking[] => pair.length === 2 && pair.every(Boolean) && pair[0]!.id !== pair[1]!.id)
+    .filter((pair): pair is Booking[] => pair.length === 2 && pair.every((booking) => booking !== undefined) && pair[0].id !== pair[1].id && pair[0].gender === pair[1].gender)
   const pairedIds = new Set(keptRooms.flat().map((booking) => booking.id))
   const freeDoubles = doubles.filter((booking) => !pairedIds.has(booking.id))
-  return [...keptRooms, ...chunkPairs(freeDoubles)]
+  const freshRooms = [...groupBy(freeDoubles, (booking) => booking.gender).values()].flatMap(chunkPairs)
+  return [...keptRooms, ...freshRooms]
 }
 
 function roomsOfGroup(bookings: Booking[], keptPairs: string[][]): Booking[][] {

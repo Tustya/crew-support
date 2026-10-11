@@ -120,7 +120,7 @@ export function SettingsPage() {
           </div>
           <aside className={cardClass}>
             <h2 className="mb-2 text-lg font-bold">Пример</h2>
-            <p className="text-sm">{quietExample}. Новое изменение в 14:12 переносит срок ещё на {draftSettings.quietMinutes} мин.</p>
+            <p className="text-sm">{quietExample}. Правка в 14:12 остаётся в том же письме и срок не сдвигает.</p>
           </aside>
         </section>
       ) : null}
@@ -166,8 +166,8 @@ export function SettingsPage() {
 function TemplateBuilder({ templateId, template, lead, onPick, onChange, onSave }: { templateId: TemplateId; template: MailTemplate; lead: boolean; onPick: (id: TemplateId) => void; onChange: (template: MailTemplate) => void; onSave: () => void }) {
   const problems = templateProblems(template)
   const rows = letterRows({
-    latest: [{ id: 'preview', crewId: 'crew-preview', fullName: 'Соколова Мария Андреевна', hotelId: 'hotel-angel', airportCode: 'SVX', localStayDate: '2026-10-09', arrivalFlight: 'CS 101', arrivalLocalDate: '2026-10-09', arrivalLocalTime: '17:45', departureFlight: 'CS 202', departureLocalDate: '2026-10-10', departureLocalTime: '08:10', roomType: 'SGL', recordStatus: 'active' }],
-    baseline: [{ id: 'preview', crewId: 'crew-preview', fullName: 'Соколова Мария Андреевна', hotelId: 'hotel-angel', airportCode: 'SVX', localStayDate: '2026-10-09', arrivalFlight: 'CS 101', arrivalLocalDate: '2026-10-09', arrivalLocalTime: '14:20', departureFlight: 'CS 202', departureLocalDate: '2026-10-10', departureLocalTime: '08:10', roomType: 'SGL', recordStatus: 'active' }],
+    latest: [{ id: 'preview', crewId: 'crew-preview', fullName: 'Соколова Мария Андреевна', hotelId: 'hotel-angel', airportCode: 'SVX', localStayDate: '2026-10-09', arrivalFlight: 'CS 101', arrivalLocalDate: '2026-10-09', arrivalLocalTime: '17:45', departureFlight: 'CS 202', departureLocalDate: '2026-10-10', departureLocalTime: '08:10', roomType: 'SGL', gender: 'F', recordStatus: 'active' }],
+    baseline: [{ id: 'preview', crewId: 'crew-preview', fullName: 'Соколова Мария Андреевна', hotelId: 'hotel-angel', airportCode: 'SVX', localStayDate: '2026-10-09', arrivalFlight: 'CS 101', arrivalLocalDate: '2026-10-09', arrivalLocalTime: '14:20', departureFlight: 'CS 202', departureLocalDate: '2026-10-10', departureLocalTime: '08:10', roomType: 'SGL', gender: 'F', recordStatus: 'active' }],
     columns: template.columns,
   })
   const textOf = (kind: MailTemplate['blocks'][number]['kind']) => template.blocks.find((block) => block.kind === kind)?.text ?? ''

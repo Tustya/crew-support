@@ -17,6 +17,7 @@ function guest(id: string, roomType: Booking['roomType'] = 'DBL', patch: Partial
     departureLocalDate: '2026-10-10',
     departureLocalTime: '08:10',
     roomType,
+    gender: 'M',
     recordStatus: 'active',
     ...patch,
   }
@@ -54,6 +55,14 @@ describe('раскладка по номерам', () => {
   it('сингл и отменённый в пару не попадают', () => {
     const rooms = assignRooms([guest('a'), guest('b', 'SGL'), guest('c', 'DBL', { recordStatus: 'cancelled' }), guest('d')], [])
     expect(rooms.map((room) => [room.kind, room.bookingIds])).toEqual([['DBL', ['a', 'd']], ['SGL', ['b']], ['DBL', ['c']]])
+  })
+
+  it('дабл собирается только внутри одного пола', () => {
+    const rooms = assignRooms(
+      [guest('a', 'DBL', { gender: 'F' }), guest('b', 'DBL', { gender: 'M' }), guest('c', 'DBL', { gender: 'F' })],
+      [['a', 'b']],
+    )
+    expect(rooms.map((room) => [room.kind, room.bookingIds])).toEqual([['DBL', ['a', 'c']], ['DBL', ['b']]])
   })
 
   it('разные гостиницы не смешиваются', () => {

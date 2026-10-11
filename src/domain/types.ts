@@ -1,5 +1,6 @@
 export type Role = 'specialist' | 'lead'
 export type RoomType = 'SGL' | 'DBL'
+export type Gender = 'F' | 'M'
 export type ContractStatus = 'confirmed' | 'none' | 'unknown'
 export type RecipientSource = 'aviabit' | 'local'
 export type RecordStatus = 'active' | 'cancelled'
@@ -83,6 +84,7 @@ export interface Booking {
   departureLocalDate: string
   departureLocalTime: string
   roomType: RoomType
+  gender: Gender
   recordStatus: RecordStatus
   replacementOf?: string
 }
@@ -132,6 +134,7 @@ export interface Snapshot {
 }
 
 export interface GroupTimer {
+  quietStartedAt: string
   lastChangeAt: string
   dueAt: string
 }
@@ -204,6 +207,7 @@ export interface MailRow {
   departureDate: string
   departureTime: string
   roomType: string
+  gender: Gender
   roomKey: string
   roomLabel: string
   badge: 'new' | 'cancel' | null

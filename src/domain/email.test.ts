@@ -18,6 +18,7 @@ function guest(id: string, fullName: string, roomType: Booking['roomType']): Boo
     departureLocalDate: '2026-10-10',
     departureLocalTime: '08:10',
     roomType,
+    gender: 'M',
     recordStatus: 'active',
   }
 }

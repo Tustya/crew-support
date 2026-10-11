@@ -108,6 +108,7 @@ export function letterRows(input: {
       departureDate: formatStay(source.departureLocalDate),
       departureTime: source.departureLocalTime,
       roomType: source.roomType,
+      gender: source.gender,
       badge,
       changedFields,
       manualFields: [],

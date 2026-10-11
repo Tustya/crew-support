@@ -9,6 +9,7 @@ const FIELD_LABELS: Record<string, string> = {
   departureLocalDate: 'Дата вылета',
   departureLocalTime: 'Время вылета',
   roomType: 'Тип номера',
+  gender: 'Пол',
   hotelId: 'Гостиница',
   localStayDate: 'Дата размещения',
   recordStatus: 'Состояние заявки',
@@ -33,6 +34,7 @@ export function bookingFingerprint(booking: Booking): string {
     booking.departureLocalDate,
     booking.departureLocalTime,
     booking.roomType,
+    booking.gender,
     booking.recordStatus,
   ].join('~')
 }
@@ -223,7 +225,10 @@ function pushCategory(previous: Booking, afterBooking: Booking, input: DiffInput
     },
     {
       kind: 'room',
-      fields: collect([['roomType', previous.roomType, afterBooking.roomType]]),
+      fields: collect([
+        ['roomType', previous.roomType, afterBooking.roomType],
+        ['gender', previous.gender, afterBooking.gender],
+      ]),
     },
   ]
   for (const category of categories) {

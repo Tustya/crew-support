@@ -362,7 +362,7 @@ export function applySettings(data: DemoData, nextSettings: Settings): DemoData 
   const timers = { ...data.groupTimers }
   if (settings.quietMinutes !== data.settings.quietMinutes) {
     for (const [key, timer] of Object.entries(timers)) {
-      timers[key] = { ...timer, dueAt: addMinutes(timer.lastChangeAt, settings.quietMinutes) }
+      timers[key] = { ...timer, dueAt: addMinutes(timer.quietStartedAt, settings.quietMinutes) }
     }
   }
   const nextCheckAt =

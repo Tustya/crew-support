@@ -15,7 +15,8 @@ describe('crew support domain', () => {
     expect(checked.snapshots).toHaveLength(data.snapshots.length)
     expect(checked.groupTimers[angel]?.dueAt).toBe(dueAt)
     const delayed = injectDelay(checked)
-    expect(delayed.groupTimers[angel]?.dueAt).not.toBe(dueAt)
+    expect(delayed.groupTimers[angel]?.dueAt).toBe(dueAt)
+    expect(delayed.groupTimers[angel]?.lastChangeAt).toBe(checked.clockIso)
     expect(delayed.groupTimers['hotel-neva|LED|2026-10-09']).toBeUndefined()
   })
 

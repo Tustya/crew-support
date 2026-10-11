@@ -3,7 +3,7 @@ import { applyTokens, blockText, letterRows, pickTemplateId, roomPairsOf } from 
 import { actorLabel } from './labels'
 import { addMinutes } from './time'
 import { defaultSettings } from './templates'
-import type { Activity, Baseline, Booking, DemoData, Draft, GroupView, NotificationRecord, ScenarioId, Snapshot } from './types'
+import type { Activity, Baseline, Booking, DemoData, Draft, GroupTimer, GroupView, NotificationRecord, ScenarioId, Snapshot } from './types'
 import { latestSnapshot, selectGroups } from './view'
 
 let sequence = 1
@@ -195,6 +195,11 @@ export function applyClock(data: DemoData, clockIso: string, runPoll: boolean): 
   return prepareDueGroups(next)
 }
 
+function nextTimer(current: GroupTimer | undefined, at: string, quietMinutes: number): GroupTimer {
+  if (current) return { ...current, lastChangeAt: at }
+  return { quietStartedAt: at, lastChangeAt: at, dueAt: addMinutes(at, quietMinutes) }
+}
+
 export function patchLatest(data: DemoData, bookingId: string, patch: Partial<Booking>): DemoData {
   const latest = latestSnapshot(data)
   if (!latest) return data
@@ -218,7 +223,7 @@ export function patchLatest(data: DemoData, bookingId: string, patch: Partial<Bo
   })
   const affected = [...new Set(hop.map((event) => event.groupKey))]
   const timers = { ...data.groupTimers }
-  for (const key of affected) timers[key] = { lastChangeAt: data.clockIso, dueAt: addMinutes(data.clockIso, data.settings.quietMinutes) }
+  for (const key of affected) timers[key] = nextTimer(timers[key], data.clockIso, data.settings.quietMinutes)
   const draftData: DemoData = { ...data, snapshots: [...data.snapshots, snapshot], groupTimers: timers }
   const netKeys = new Set(selectGroups(draftData).filter((group) => group.changes.length > 0).map((group) => group.key))
   for (const key of Object.keys(timers)) {
@@ -244,7 +249,12 @@ export function patchLatest(data: DemoData, bookingId: string, patch: Partial<Bo
         hotelName: named[0] ?? '',
         airportCode: affected[0]?.split('|')[1] ?? '',
         localStayDate: affected[0]?.split('|')[2] ?? '',
-        description: netKeys.size === 0 ? 'Итоговая корректировка исчезла. Ожидание снято, история сохранена.' : `Таймер обновлён: ${named.join(', ') || 'группа'}`,
+        description:
+          netKeys.size === 0
+            ? 'Итоговая корректировка исчезла. Ожидание снято, история сохранена.'
+            : affected.some((key) => data.groupTimers[key])
+              ? `Правка учтена, срок тишины прежний: ${named.join(', ') || 'группа'}`
+              : `Тишина начата: ${named.join(', ') || 'группа'}`,
         result: 'info',
         groupKey: affected[0] ?? null,
         draftId: null,
@@ -312,6 +322,7 @@ export function sentBookings(draft: Draft): Booking[] {
       departureLocalDate: row.departureDate.split('.').reverse().join('-'),
       departureLocalTime: row.departureTime,
       roomType: row.roomType === 'DBL' ? 'DBL' : 'SGL',
+      gender: row.gender,
       recordStatus: 'active' as const,
     }))
 }

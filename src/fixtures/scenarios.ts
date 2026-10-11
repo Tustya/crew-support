@@ -69,6 +69,11 @@ export function baseHotels(): Hotel[] {
   ]
 }
 
+function genderOf(fullName: string): Booking['gender'] {
+  const patronymic = fullName.split(' ')[2] ?? ''
+  return /(овна|евна|ична)$/.test(patronymic) ? 'F' : 'M'
+}
+
 function stay(id: string, crewId: string, fullName: string, hotelId: string, airportCode: string, stayDate: string, arrivalTime: string, room: 'SGL' | 'DBL'): Booking {
   const number = Number(id.replace(/\D/g, '').slice(-2) || '1')
   return {
@@ -85,6 +90,7 @@ function stay(id: string, crewId: string, fullName: string, hotelId: string, air
     departureLocalDate: stayDate,
     departureLocalTime: '21:10',
     roomType: room,
+    gender: genderOf(fullName),
     recordStatus: 'active',
   }
 }
@@ -131,7 +137,7 @@ function snapshot(input: {
 
 function timers(entries: Array<[string, string]>, quietMinutes: number): DemoData['groupTimers'] {
   const next: DemoData['groupTimers'] = {}
-  for (const [key, at] of entries) next[key] = { lastChangeAt: at, dueAt: addMinutes(at, quietMinutes) }
+  for (const [key, at] of entries) next[key] = { quietStartedAt: at, lastChangeAt: at, dueAt: addMinutes(at, quietMinutes) }
   return next
 }
 
@@ -241,7 +247,7 @@ export function loadScenario(scenarioId: ScenarioId, settings: Settings, role: R
         const person = PEOPLE[groupIndex * 4 + seat]
         const minutes = 8 * 60 + groupIndex * 20 + seat * 15
         const arrival = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
-        const booking = stay(`b-m-${groupIndex}${seat}`, person[0], person[1], group.hotelId, group.airportCode, group.stay, arrival, seat % 2 ? 'DBL' : 'SGL')
+        const booking = stay(`b-m-${groupIndex}${seat}`, person[0], person[1], group.hotelId, group.airportCode, group.stay, arrival, seat === 3 ? 'SGL' : 'DBL')
         older.push(booking)
         const delayed = seat < 3 ? addMinutes(`2026-10-09T${arrival}:00.000Z`, 40).slice(11, 16) : arrival
         latest.push(seat < 3 ? { ...booking, arrivalLocalTime: delayed } : booking)

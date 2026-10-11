@@ -1,5 +1,6 @@
+import { assignRooms, groupBy, type Room } from './rooms'
 import { formatStay } from './time'
-import type { Booking, ColumnKey, ColumnSetting, Hotel, MailRow, MailTemplate, TemplateBlock, TemplateId } from './types'
+import type { Booking, ColumnKey, ColumnSetting, Hotel, MailRow, MailTemplate, RoomType, TemplateBlock, TemplateId } from './types'
 
 export const ALLOWED_TOKENS = [
   'hotel_name',
@@ -74,15 +75,19 @@ export function columnValue(row: MailRow, key: ColumnKey): string {
   return row[key]
 }
 
+const ROOM_LABEL: Record<RoomType, string> = { SGL: 'Сингл', DBL: 'Дабл' }
+
 export function letterRows(input: {
   latest: Booking[]
   baseline: Booking[] | null
   columns: ColumnSetting[]
+  keptPairs?: string[][]
 }): MailRow[] {
   const latestById = new Map(input.latest.map((booking) => [booking.id, booking]))
   const baselineById = new Map((input.baseline ?? []).map((booking) => [booking.id, booking]))
   const ids = [...new Set([...latestById.keys(), ...baselineById.keys()])]
-  const rows: MailRow[] = []
+  const rows: Omit<MailRow, 'roomKey' | 'roomLabel'>[] = []
+  const occupants: Booking[] = []
   for (const id of ids) {
     const current = latestById.get(id)
     const previous = baselineById.get(id)
@@ -92,6 +97,7 @@ export function letterRows(input: {
     if (!source) continue
     const badge = badgeFor(current, previous)
     const changedFields = changedColumns(current, previous, badge)
+    occupants.push(badge === 'cancel' ? { ...source, recordStatus: 'cancelled' } : source)
     rows.push({
       bookingId: id,
       fullName: source.fullName,
@@ -107,7 +113,36 @@ export function letterRows(input: {
       manualFields: [],
     })
   }
-  return rows.sort((left, right) => left.fullName.localeCompare(right.fullName, 'ru'))
+  return placeInRooms(rows, assignRooms(occupants, input.keptPairs ?? []))
+}
+
+function placeInRooms(rows: Omit<MailRow, 'roomKey' | 'roomLabel'>[], rooms: Room[]): MailRow[] {
+  const roomByBookingId = new Map(rooms.flatMap((room) => room.bookingIds.map((bookingId) => [bookingId, room] as const)))
+  const byName = (left: { fullName: string }, right: { fullName: string }) => left.fullName.localeCompare(right.fullName, 'ru')
+  const placedRows = rows.flatMap((row) => {
+    const room = roomByBookingId.get(row.bookingId)
+    return room ? [{ ...row, roomKey: room.key, roomLabel: ROOM_LABEL[room.kind] }] : []
+  })
+  const leadNameByRoom = new Map<string, string>()
+  for (const row of [...placedRows].sort(byName)) {
+    if (!leadNameByRoom.has(row.roomKey)) leadNameByRoom.set(row.roomKey, row.fullName)
+  }
+  return placedRows.sort(
+    (left, right) =>
+      (leadNameByRoom.get(left.roomKey) ?? '').localeCompare(leadNameByRoom.get(right.roomKey) ?? '', 'ru') ||
+      left.roomKey.localeCompare(right.roomKey) ||
+      byName(left, right),
+  )
+}
+
+export function roomPairsOf(rows: MailRow[]): string[][] {
+  const rowsByRoom = groupBy(
+    rows.filter((row) => row.badge !== 'cancel'),
+    (row) => row.roomKey,
+  )
+  return [...rowsByRoom.values()]
+    .filter((roomRows) => roomRows.length === 2)
+    .map((roomRows) => roomRows.map((row) => row.bookingId).sort())
 }
 
 function badgeFor(current: Booking | undefined, previous: Booking | undefined): 'new' | 'cancel' | null {

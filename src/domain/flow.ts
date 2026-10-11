@@ -1,5 +1,5 @@
 import { diffBookings, fingerprintBookings, groupKeyOf } from './diff'
-import { applyTokens, blockText, letterRows, pickTemplateId } from './email'
+import { applyTokens, blockText, letterRows, pickTemplateId, roomPairsOf } from './email'
 import { actorLabel } from './labels'
 import { addMinutes } from './time'
 import { defaultSettings } from './templates'
@@ -108,7 +108,12 @@ export function makeDraft(data: DemoData, group: GroupView, isTest = false): Dra
     intro: applyTokens(blockText(template, 'intro'), variables),
     closing: applyTokens(blockText(template, 'closing'), variables),
     signature: applyTokens(blockText(template, 'signature'), variables),
-    rows: letterRows({ latest: group.latestBookings, baseline: group.baselineBookings, columns: template.columns }),
+    rows: letterRows({
+      latest: group.latestBookings,
+      baseline: group.baselineBookings,
+      columns: template.columns,
+      keptPairs: data.baselines[group.key]?.roomPairs ?? (group.draft ? roomPairsOf(group.draft.rows) : []),
+    }),
     columns: template.columns.map((column) => ({ ...column })),
     newLabel: template.newLabel,
     cancelLabel: template.cancelLabel,
@@ -250,10 +255,10 @@ export function patchLatest(data: DemoData, bookingId: string, patch: Partial<Bo
   })
 }
 
-export function writeBaseline(baselines: Record<string, Baseline>, groupKey: string, bookings: Booking[], snapshotId: string, establishedBy: Baseline['establishedBy'], notifiedAt: string, notificationId: string | null): Record<string, Baseline> {
+export function writeBaseline(baselines: Record<string, Baseline>, groupKey: string, bookings: Booking[], snapshotId: string, establishedBy: Baseline['establishedBy'], notifiedAt: string, notificationId: string | null, roomPairs: string[][]): Record<string, Baseline> {
   return {
     ...baselines,
-    [groupKey]: { groupKey, bookings, originatingSnapshotId: snapshotId, establishedBy, notificationId, notifiedAt },
+    [groupKey]: { groupKey, bookings, originatingSnapshotId: snapshotId, establishedBy, notificationId, notifiedAt, roomPairs },
   }
 }
 

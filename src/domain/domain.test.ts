@@ -86,6 +86,7 @@ describe('crew support domain', () => {
     const again = finishSend({ ...sent, sendingDraftId: draft?.id ?? '' }, retried.payload)
     expect(again.notifications.filter((item) => item.transport === 'sent')).toHaveLength(1)
     expect(selectGroups(sent).find((group) => group.key === angel)?.changes).toHaveLength(0)
+    expect(sent.baselines[angel]?.roomPairs).toEqual([])
   })
 
   it('changes only the touched hotel when quiet minutes change', () => {

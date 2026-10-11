@@ -143,6 +143,7 @@ export interface Baseline {
   establishedBy: 'scenario' | 'send' | 'external_confirm' | 'manual_base'
   notificationId: string | null
   notifiedAt: string
+  roomPairs?: string[][]
 }
 
 export interface ColumnSetting {
@@ -203,6 +204,8 @@ export interface MailRow {
   departureDate: string
   departureTime: string
   roomType: string
+  roomKey: string
+  roomLabel: string
   badge: 'new' | 'cancel' | null
   changedFields: ColumnKey[]
   manualFields: ColumnKey[]

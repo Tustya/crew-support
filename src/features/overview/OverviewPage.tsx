@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { KIND_LABEL, STATUS_LABEL, summarizeChanges } from '../../domain/labels'
-import { ageLabel, formatMsk, formatStay, mskDate, nextDate, remainingMinutes } from '../../domain/time'
+import { ageLabel, formatMsk, formatStay, mskDate, nextDate, pluralWord, remainingMinutes } from '../../domain/time'
 import type { GroupView } from '../../domain/types'
 import { selectGroups } from '../../domain/view'
 import { useDemoStore } from '../../state/store'
 import { Badge, Banner, Button, Dialog, Drawer, EmptyState, cardClass } from '../../ui/kit'
+import { OVERVIEW_CARDS, matchesOverviewCard, overviewCardCount, type OverviewCard } from './overviewCards'
 
 export function OverviewPage() {
   const data = useDemoStore((state) => state.data)
@@ -16,7 +17,7 @@ export function OverviewPage() {
   const setBaseline = useDemoStore((state) => state.setBaseline)
   const prepareGroup = useDemoStore((state) => state.prepareGroup)
   const navigate = useNavigate()
-  const [card, setCard] = useState<string | null>(null)
+  const [card, setCard] = useState<OverviewCard | null>(null)
   const [dates, setDates] = useState<'today' | 'tomorrow' | 'both'>('both')
   const [airport, setAirport] = useState('all')
   const [query, setQuery] = useState('')
@@ -33,20 +34,12 @@ export function OverviewPage() {
       if (dates === 'today' && group.localStayDate !== today) return false
       if (dates === 'tomorrow' && group.localStayDate !== tomorrow) return false
       if (airport !== 'all' && group.airportCode !== airport) return false
-      if (card === 'review' && group.status !== 'needs_review') return false
-      if (card === 'waiting' && group.status !== 'waiting' && group.status !== 'preparing') return false
-      if (card === 'decision' && group.status !== 'needs_decision' && group.status !== 'stale') return false
+      if (!matchesOverviewCard(group, card)) return false
       if (!query.trim()) return true
       const haystack = `${group.hotel.name} ${group.hotel.city} ${group.latestBookings.map((booking) => booking.fullName).join(' ')}`.toLowerCase()
       return haystack.includes(query.trim().toLowerCase())
     })
   }, [airport, card, dates, groups, query, showDone, today, tomorrow])
-  const counts = {
-    review: groups.filter((group) => group.status === 'needs_review').length,
-    events: groups.reduce((sum, group) => sum + group.changes.length, 0),
-    waiting: groups.filter((group) => group.status === 'waiting' || group.status === 'preparing').length,
-    decision: groups.filter((group) => group.status === 'needs_decision' || group.status === 'stale').length,
-  }
   if (data.phase !== 'running') {
     return (
       <EmptyState
@@ -95,10 +88,10 @@ export function OverviewPage() {
         </Banner>
       ) : null}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat title="Черновики на проверку" value={counts.review} unit="групп" active={card === 'review'} onClick={() => setCard(card === 'review' ? null : 'review')} />
-        <Stat title="Неуведомлённые изменения" value={counts.events} unit="событий" active={card === 'events'} onClick={() => setCard(card === 'events' ? null : 'events')} />
-        <Stat title="Ожидают подготовки" value={counts.waiting} unit="групп" active={card === 'waiting'} onClick={() => setCard(card === 'waiting' ? null : 'waiting')} />
-        <Stat title="Требует решения" value={counts.decision} unit="групп" active={card === 'decision'} onClick={() => setCard(card === 'decision' ? null : 'decision')} />
+        {OVERVIEW_CARDS.map((item) => {
+          const count = overviewCardCount(groups, item.id)
+          return <Stat key={item.id} title={item.title} value={count} unit={pluralWord(count, ...item.unit)} active={card === item.id} onClick={() => setCard(card === item.id ? null : item.id)} />
+        })}
       </div>
       <section className={cardClass}>
         <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -123,7 +116,9 @@ export function OverviewPage() {
             Сбросить фильтры
           </button>
         </div>
-        {visible.length === 0 ? (
+        {visible.length === 0 && card ? (
+          <EmptyState title="Здесь делать нечего" action={<Button tone="ghost" onClick={() => setCard(null)}>Показать все</Button>} />
+        ) : visible.length === 0 ? (
           <EmptyState title={groups.some((group) => group.changes.length > 0) ? 'Нет результатов' : 'Неуведомлённых изменений нет'} />
         ) : (
           <div className="overflow-x-auto">

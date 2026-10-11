@@ -53,10 +53,20 @@ export function EmailPreview({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
-              <tr key={row.bookingId} className="border-b border-line align-top">
+            {rows.map((row, index) => (
+              <tr key={row.bookingId} className={`align-top ${isRoomEnd(rows, index) ? 'border-b border-line' : ''}`}>
                 {visible.map((column) => {
                   const marked = row.badge !== 'cancel' && (row.changedFields.includes(column.key) || row.manualFields.includes(column.key))
+                  if (column.key === 'roomType') {
+                    if (!isRoomStart(rows, index)) return null
+                    const roomRows = rows.slice(index, index + roomSize(rows, index))
+                    const isRoomMarked = roomRows.some((roomRow) => roomRow.badge !== 'cancel' && (roomRow.changedFields.includes('roomType') || roomRow.manualFields.includes('roomType')))
+                    return (
+                      <td key={column.key} rowSpan={roomRows.length} className="border-l border-line px-2 py-3 align-middle font-semibold">
+                        <span className={isRoomMarked ? 'email-change' : undefined}>{row.roomLabel || row.roomType}</span>
+                      </td>
+                    )
+                  }
                   return (
                     <td key={column.key} className="px-2 py-3 tabular-nums">
                       {column.key === 'fullName' && row.badge ? (
@@ -77,4 +87,22 @@ export function EmailPreview({
       <p className="mt-3 whitespace-pre-wrap text-ink-soft">{signature}</p>
     </article>
   )
+}
+
+function roomOf(row: MailRow | undefined): string | undefined {
+  return row && (row.roomKey || row.bookingId)
+}
+
+function isRoomStart(rows: MailRow[], index: number): boolean {
+  return roomOf(rows[index - 1]) !== roomOf(rows[index])
+}
+
+function isRoomEnd(rows: MailRow[], index: number): boolean {
+  return roomOf(rows[index + 1]) !== roomOf(rows[index])
+}
+
+function roomSize(rows: MailRow[], index: number): number {
+  const room = roomOf(rows[index])
+  const nextRoomIndex = rows.findIndex((row, rowIndex) => rowIndex > index && roomOf(row) !== room)
+  return (nextRoomIndex === -1 ? rows.length : nextRoomIndex) - index
 }

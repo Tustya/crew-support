@@ -1,4 +1,4 @@
-import { applyOverrides, isDemoEmail, normalizeEmails, templateProblems } from '../domain/email'
+import { applyOverrides, isDemoEmail, normalizeEmails, roomPairsOf, templateProblems } from '../domain/email'
 import {
   applyClock,
   archiveNotification,
@@ -278,7 +278,7 @@ export function finishSend(data: DemoData, payload: Booking[] | null): DemoData 
     )
   }
   const notice = archiveNotification({ ...data, sendingDraftId: draft.id }, draft, 'sent')
-  const baselines = writeBaseline(data.baselines, draft.groupKey, payload, draft.sourceSnapshotId, 'send', data.clockIso, notice.id)
+  const baselines = writeBaseline(data.baselines, draft.groupKey, payload, draft.sourceSnapshotId, 'send', data.clockIso, notice.id, roomPairsOf(draft.rows))
   const timers = { ...data.groupTimers }
   const [hotelId, airportCode, stayDate] = draft.groupKey.split('|')
   const live = (latestSnapshot(data)?.bookings ?? []).filter(
@@ -332,7 +332,7 @@ export function confirmExternal(data: DemoData, notificationId: string): DemoDat
   if (!notice) return data
   const draft = data.drafts.find((item) => item.id === notice.draftId)
   const payload = draft ? baselinePayload(data, draft) : []
-  const baselines = writeBaseline(data.baselines, notice.groupKey, payload, draft?.sourceSnapshotId ?? '', 'external_confirm', data.clockIso, notice.id)
+  const baselines = writeBaseline(data.baselines, notice.groupKey, payload, draft?.sourceSnapshotId ?? '', 'external_confirm', data.clockIso, notice.id, draft ? roomPairsOf(draft.rows) : [])
   return record(
     {
       ...data,

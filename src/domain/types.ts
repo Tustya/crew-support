@@ -215,6 +215,8 @@ export interface MailRow {
   manualFields: ColumnKey[]
 }
 
+export type LetterRow = Omit<MailRow, 'gender'>
+
 export interface RowOverride {
   bookingId: string
   field: ColumnKey

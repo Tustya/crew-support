@@ -1,6 +1,6 @@
 import type { Booking, ChangeEvent, ChangeKind, FieldDelta, Snapshot } from './types'
 
-const FIELD_LABELS: Record<string, string> = {
+export const FIELD_LABELS: Record<string, string> = {
   fullName: 'ФИО',
   arrivalFlight: 'Рейс прибытия',
   arrivalLocalDate: 'Дата прилёта',

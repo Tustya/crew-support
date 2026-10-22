@@ -1,0 +1,809 @@
+openapi: 3.1.0
+info:
+  title: Crew Support API
+  version: 0.1.0
+  description: |
+    Локальный API смены. Префикс /api/v1. Производство fail-closed: нет Aviabit, SSO и SMTP.
+    Экраны: очередь GET /groups, сравнение GET /snapshots/compare, письмо /drafts, справочник /hotels, настройки /settings.
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - devSubject: []
+tags:
+  - name: health
+  - name: queue
+  - name: source
+  - name: drafts
+  - name: directory
+paths:
+  /health/live:
+    get:
+      tags: [health]
+      operationId: healthLive
+      security: []
+      responses:
+        '200':
+          description: Процесс жив
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    const: live
+  /health/ready:
+    get:
+      tags: [health]
+      operationId: healthReady
+      security: []
+      responses:
+        '200':
+          description: База доступна
+        '503':
+          description: База недоступна
+  /api/v1/me:
+    get:
+      tags: [queue]
+      operationId: getMe
+      responses:
+        '200':
+          description: Субъект и роль из базы
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Error'
+  /api/v1/overview:
+    get:
+      tags: [queue]
+      operationId: getOverview
+      responses:
+        '200':
+          description: Счётчики очереди и статус источника
+  /api/v1/groups:
+    get:
+      tags: [queue]
+      operationId: listGroups
+      parameters:
+        - $ref: '#/components/parameters/limit'
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Страница групп
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page'
+  /api/v1/groups/{id}:
+    get:
+      tags: [queue]
+      operationId: getGroup
+      parameters:
+        - $ref: '#/components/parameters/id'
+      responses:
+        '200':
+          description: Группа
+        '404':
+          $ref: '#/components/responses/Error'
+  /api/v1/groups/{id}/prepare:
+    post:
+      tags: [drafts]
+      operationId: prepareGroup
+      parameters:
+        - $ref: '#/components/parameters/id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                bypassQuiet:
+                  type: boolean
+                reason:
+                  type: string
+                  minLength: 3
+      responses:
+        '200':
+          description: Черновик создан
+        '409':
+          $ref: '#/components/responses/Error'
+  /api/v1/corrections:
+    get:
+      tags: [queue]
+      operationId: listCorrections
+      responses:
+        '200':
+          description: Группы с изменениями
+  /api/v1/snapshots:
+    get:
+      tags: [source]
+      operationId: listSnapshots
+      responses:
+        '200':
+          description: Снимки
+  /api/v1/snapshots/{id}:
+    get:
+      tags: [source]
+      operationId: getSnapshot
+      parameters:
+        - $ref: '#/components/parameters/id'
+      responses:
+        '200':
+          description: Заголовок снимка
+        '404':
+          $ref: '#/components/responses/Error'
+  /api/v1/snapshots/compare:
+    get:
+      tags: [source]
+      operationId: compareSnapshots
+      parameters:
+        - name: leftId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: rightId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Только чтение. События не записываются
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [leftId, rightId, events, ambiguous, changed]
+                properties:
+                  leftId:
+                    type: string
+                  rightId:
+                    type: string
+                  events:
+                    type: array
+                    items:
+                      type: object
+                  ambiguous:
+                    type: boolean
+                  unresolvedAbsences:
+                    type: array
+                    items:
+                      type: object
+                  changed:
+                    type: boolean
+  /api/v1/source/status:
+    get:
+      tags: [source]
+      operationId: sourceStatus
+      responses:
+        '200':
+          description: Состояние последней проверки
+  /api/v1/source/check:
+    post:
+      tags: [source]
+      operationId: sourceCheck
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fixture]
+              properties:
+                fixture:
+                  type: string
+                  enum: [base, delayed, delayed_more, reverted, moved, namesakes, ambiguous, partial, doubles, outage]
+      responses:
+        '202':
+          description: Проверка sample-адаптера
+        '503':
+          $ref: '#/components/responses/Error'
+  /api/v1/imports:
+    post:
+      tags: [source]
+      operationId: createImport
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '202':
+          description: Файл с согласованной шапкой принят в серию workbook
+        '503':
+          description: Шапка не распознана. Партия сохраняется как rejected
+  /api/v1/imports/{id}:
+    get:
+      tags: [source]
+      operationId: getImport
+      parameters:
+        - $ref: '#/components/parameters/id'
+      responses:
+        '200':
+          description: Метаданные партии, без байтов файла
+  /api/v1/baselines:
+    post:
+      tags: [drafts]
+      operationId: createBaseline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [groupId, snapshotId, evidence, confirmed]
+              properties:
+                groupId:
+                  type: string
+                  format: uuid
+                snapshotId:
+                  type: string
+                  format: uuid
+                evidence:
+                  type: string
+                  minLength: 3
+                confirmed:
+                  type: boolean
+      responses:
+        '201':
+          description: Новая ревизия базы
+  /api/v1/drafts:
+    get:
+      tags: [drafts]
+      operationId: listDrafts
+      responses:
+        '200':
+          description: Черновики
+  /api/v1/drafts/{id}:
+    get:
+      tags: [drafts]
+      operationId: getDraft
+      parameters:
+        - $ref: '#/components/parameters/id'
+      responses:
+        '200':
+          description: Черновик и текст
+    patch:
+      tags: [drafts]
+      operationId: patchDraft
+      parameters:
+        - $ref: '#/components/parameters/id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftPatch'
+      responses:
+        '200':
+          description: Новая неизменяемая ревизия, статус active
+        '409':
+          $ref: '#/components/responses/Error'
+  /api/v1/drafts/{id}/review:
+    post:
+      tags: [drafts]
+      operationId: reviewDraft
+      parameters:
+        - $ref: '#/components/parameters/id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, fingerprint, confirmed]
+              properties:
+                revision:
+                  type: integer
+                fingerprint:
+                  type: string
+                confirmed:
+                  type: boolean
+      responses:
+        '200':
+          description: Проверка зафиксирована
+        '409':
+          $ref: '#/components/responses/Error'
+  /api/v1/drafts/{id}/rebuild:
+    post:
+      tags: [drafts]
+      operationId: rebuildDraft
+      parameters:
+        - $ref: '#/components/parameters/id'
+      responses:
+        '200':
+          description: Новая ревизия того же черновика
+  /api/v1/drafts/{id}/send:
+    post:
+      tags: [drafts]
+      operationId: sendDraft
+      parameters:
+        - $ref: '#/components/parameters/id'
+        - $ref: '#/components/parameters/idempotencyKey'
+        - name: X-Test-Mail-Outcome
+          in: header
+          schema:
+            type: string
+            enum: [accept, reject, timeout]
+          description: Только MAIL_ADAPTER=scripted и не production
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, confirmed]
+              properties:
+                revision:
+                  type: integer
+                confirmed:
+                  type: boolean
+      responses:
+        '202':
+          description: Принято к доставке. Итог в /notifications/{id}
+        '409':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
+  /api/v1/drafts/{id}/handoff:
+    post:
+      tags: [drafts]
+      operationId: handoffDraft
+      parameters:
+        - $ref: '#/components/parameters/id'
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, confirmed]
+              properties:
+                revision:
+                  type: integer
+                confirmed:
+                  type: boolean
+      responses:
+        '200':
+          description: Передано наружу. База не двигается
+  /api/v1/notifications:
+    get:
+      tags: [drafts]
+      operationId: listNotifications
+      responses:
+        '200':
+          description: Уведомления
+  /api/v1/notifications/{id}:
+    get:
+      tags: [drafts]
+      operationId: getNotification
+      parameters:
+        - $ref: '#/components/parameters/id'
+      responses:
+        '200':
+          description: Уведомление и архивный payload
+  /api/v1/notifications/{id}/confirm-external:
+    post:
+      tags: [drafts]
+      operationId: confirmExternal
+      parameters:
+        - $ref: '#/components/parameters/id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmed, basis, sentAt]
+              properties:
+                confirmed:
+                  type: boolean
+                basis:
+                  type: string
+                  minLength: 3
+                  maxLength: 500
+                sentAt:
+                  type: string
+                  format: date-time
+      responses:
+        '200':
+          description: Новая ревизия базы из архивного письма
+  /api/v1/audit/events:
+    get:
+      tags: [directory]
+      operationId: listAudit
+      responses:
+        '200':
+          description: Журнал без текста писем и списков адресов
+  /api/v1/audit/export:
+    get:
+      tags: [directory]
+      operationId: exportAudit
+      responses:
+        '200':
+          description: CSV с BOM. Формулы экранированы
+          content:
+            text/csv:
+              schema:
+                type: string
+  /api/v1/settings:
+    get:
+      tags: [directory]
+      operationId: getSettings
+      responses:
+        '200':
+          description: Настройки
+    patch:
+      tags: [directory]
+      operationId: patchSettings
+      parameters:
+        - $ref: '#/components/parameters/ifMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                pollMinutes:
+                  type: integer
+                  minimum: 1
+                  maximum: 60
+                quietMinutes:
+                  type: integer
+                  minimum: 1
+                  maximum: 120
+                autoCheck:
+                  type: boolean
+                autoPrepare:
+                  type: boolean
+                stayScope:
+                  type: string
+                  enum: [today, tomorrow, both]
+                staleAfterMinutes:
+                  type: integer
+                senderName:
+                  type: string
+      responses:
+        '200':
+          description: Сохранено. Смена quietMinutes пересчитывает dueAt
+        '403':
+          $ref: '#/components/responses/Error'
+        '412':
+          $ref: '#/components/responses/Error'
+  /api/v1/hotels:
+    get:
+      tags: [directory]
+      operationId: listHotels
+      parameters:
+        - name: query
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Справочник
+    post:
+      tags: [directory]
+      operationId: createHotel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HotelWrite'
+      responses:
+        '201':
+          description: Гостиница создана
+  /api/v1/hotels/{id}:
+    patch:
+      tags: [directory]
+      operationId: patchHotel
+      parameters:
+        - $ref: '#/components/parameters/id'
+        - $ref: '#/components/parameters/ifMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HotelWrite'
+      responses:
+        '200':
+          description: Гостиница обновлена
+        '412':
+          $ref: '#/components/responses/Error'
+  /api/v1/templates:
+    get:
+      tags: [directory]
+      operationId: listTemplates
+      responses:
+        '200':
+          description: Текущие шаблоны
+  /api/v1/templates/{key}/versions:
+    get:
+      tags: [directory]
+      operationId: listTemplateVersions
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [adjustment, new_booking, cancellation]
+      responses:
+        '200':
+          description: Версии шаблона
+    post:
+      tags: [directory]
+      operationId: publishTemplate
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [adjustment, new_booking, cancellation]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Новая версия шаблона
+        '422':
+          $ref: '#/components/responses/Error'
+  /api/v1/exceptions:
+    get:
+      tags: [queue]
+      operationId: listExceptions
+      responses:
+        '200':
+          description: Открытые исключения
+  /api/v1/exceptions/{id}/hold:
+    post:
+      tags: [queue]
+      operationId: holdException
+      parameters:
+        - $ref: '#/components/parameters/id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [comment]
+              properties:
+                comment:
+                  type: string
+                  minLength: 3
+      responses:
+        '200':
+          description: Ручное удержание
+  /api/v1/exceptions/{id}/resolve:
+    post:
+      tags: [queue]
+      operationId: resolveException
+      parameters:
+        - $ref: '#/components/parameters/id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [comment]
+              properties:
+                comment:
+                  type: string
+                  minLength: 3
+      responses:
+        '200':
+          description: Закрыто только kind=manual
+        '403':
+          $ref: '#/components/responses/Error'
+  /api/v1/integrations/status:
+    get:
+      tags: [source]
+      operationId: integrationStatus
+      responses:
+        '200':
+          description: Режимы source и mail из окружения
+  /api/v1/integrations/{adapter}/test:
+    post:
+      tags: [source]
+      operationId: testIntegration
+      parameters:
+        - name: adapter
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [source, mail]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Проверка локального адаптера
+        '400':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
+  /api/v1/jobs/{id}:
+    get:
+      tags: [source]
+      operationId: getJob
+      parameters:
+        - $ref: '#/components/parameters/id'
+      responses:
+        '200':
+          description: Задание
+        '404':
+          $ref: '#/components/responses/Error'
+components:
+  securitySchemes:
+    devSubject:
+      type: apiKey
+      in: header
+      name: X-Dev-Subject
+      description: Только AUTH_MODE=mock вне production. X-Role и поле role в теле не читаются.
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    ifMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema:
+        type: string
+        example: '"1"'
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    Error:
+      description: Ошибка
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, correlationId]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+            correlationId:
+              type: string
+    Page:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+        nextCursor:
+          type: string
+          nullable: true
+        total:
+          type: integer
+    Me:
+      type: object
+      required: [subject, displayName, role, permissions]
+      properties:
+        subject:
+          type: string
+        displayName:
+          type: string
+        role:
+          type: string
+          enum: [specialist, lead, system]
+        permissions:
+          type: array
+          items:
+            type: string
+    DraftPatch:
+      type: object
+      required: [expectedRevision, subject, intro, closing, signature, recipients, cc, overrides]
+      properties:
+        expectedRevision:
+          type: integer
+        subject:
+          type: string
+        intro:
+          type: string
+        closing:
+          type: string
+        signature:
+          type: string
+        recipients:
+          type: array
+          items:
+            type: string
+        cc:
+          type: array
+          items:
+            type: string
+        overrides:
+          type: array
+          items:
+            type: object
+    HotelWrite:
+      type: object
+      properties:
+        name:
+          type: string
+        city:
+          type: string
+        airportCode:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        timezone:
+          type: string
+        recipients:
+          type: array
+          items:
+            type: string
+        cc:
+          type: array
+          items:
+            type: string
+        contractStatus:
+          type: string
+          enum: [confirmed, none, unknown]
+        active:
+          type: boolean
+        comment:
+          type: string

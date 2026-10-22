@@ -1,19 +1,25 @@
 # Crew Support · гостиницы
 
-Фронтовый прототип рабочего места смены. Реальных подключений к Aviabit, почте и Excel нет.
+Рабочее место смены. Интерфейс ходит в локальный API. Почта и Aviabit в production выключены.
 
 ## Запуск
 
-Нужен Node.js 20 или новее.
+Нужны Node.js 22+ и PostgreSQL на `127.0.0.1:54329` (контейнер `crew-support-pg`).
+
+```bash
+cd backend
+npm install
+npm run migrate
+npm run seed
+DATABASE_URL=postgres://crew:crew@127.0.0.1:54329/crew_support AUTH_MODE=mock SOURCE_ADAPTER=sample MAIL_ADAPTER=disabled PORT=8081 npm start
+```
 
 ```bash
 npm install
 npm run dev
 ```
 
-Откройте адрес из терминала, обычно http://127.0.0.1:5173/, и нажмите «Запустить демо-смену».
-
-Демо-время стартует с 09.10.2026 14:00 МСК. Часы после обновления страницы стоят на паузе. Кнопка «Сценарии» переключает смены, двигает часы на +1 и +5 минут и подставляет ошибку источника.
+Откройте http://127.0.0.1:5173/ и войдите как специалист или старший смены. Роль отдаёт `GET /api/v1/me`. Выгрузки: `backend/fixtures/01-initial.xlsx`, затем `backend/fixtures/02-changes.xlsx`. В файлах есть колонки «Идентификатор брони» и «Код гостиницы» (`angel`, `bereg`). Без них строка не попадает в очередь.
 
 ## Проверки и сборка
 
@@ -25,6 +31,29 @@ npm run preview
 
 `npm run build` кладёт сайт в `dist/`. `npm run preview` показывает эту сборку локально.
 
-## Границы демонстрации
+## Локальный API
 
-Состояние смены хранится в `localStorage` (`crew-support-demo`). Токены остаются только в памяти вкладки и в журнал не попадают. Загруженный Excel показывает имя файла и не строит сравнение. Отправка письма сеть не вызывает.
+Интерфейс проксирует `/api` на `127.0.0.1:8081`. API слушает только localhost.
+
+PostgreSQL:
+
+```bash
+docker run -d --name crew-support-pg -p 127.0.0.1:54329:5432 \
+  -e POSTGRES_USER=crew -e POSTGRES_PASSWORD=crew -e POSTGRES_DB=crew_support \
+  postgres:18-alpine
+```
+
+```bash
+cd backend
+cp .env.example .env
+npm install
+npm run migrate
+npm run seed
+npm start
+```
+
+`npm test` в `backend/` гоняет домен и HTTP против `crew_support_test` на том же порту. Контракт — `backend/openapi.yaml`. В production процесс не стартует с mock-входом, sample-источником и почтой.
+
+## Границы
+
+В сессии браузера хранится только субъект входа, не экипаж и не письма. Файл без согласованной шапки отклоняется. Почтовый шлюз выключен: письмо передаётся наружу и подтверждается вручную. В production mock-вход не стартует.

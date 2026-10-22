@@ -1,6 +1,6 @@
 import { assignRooms, groupBy, type Room } from './rooms'
 import { formatStay } from './time'
-import type { Booking, ColumnKey, ColumnSetting, Hotel, MailRow, MailTemplate, RoomType, TemplateBlock, TemplateId } from './types'
+import type { Booking, ColumnKey, ColumnSetting, Hotel, LetterRow, MailRow, MailTemplate, RoomType, TemplateBlock, TemplateId } from './types'
 
 export const ALLOWED_TOKENS = [
   'hotel_name',
@@ -71,7 +71,7 @@ export function recipientKey(hotel: Hotel | undefined): string {
   return `${hotel.contractStatus}|${hotel.active ? '1' : '0'}|${recipients}|${copies}`
 }
 
-export function columnValue(row: MailRow, key: ColumnKey): string {
+export function columnValue(row: LetterRow, key: ColumnKey): string {
   return row[key]
 }
 

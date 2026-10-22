@@ -1,5 +1,5 @@
 import { formatStay } from '../domain/time'
-import type { ColumnSetting, MailRow } from '../domain/types'
+import type { ColumnSetting, LetterRow } from '../domain/types'
 import { columnValue } from '../domain/email'
 
 export function EmailPreview({
@@ -25,7 +25,7 @@ export function EmailPreview({
   intro: string
   closing: string
   signature: string
-  rows: MailRow[]
+  rows: LetterRow[]
   columns: ColumnSetting[]
   newLabel: string
   cancelLabel: string
@@ -89,19 +89,19 @@ export function EmailPreview({
   )
 }
 
-function roomOf(row: MailRow | undefined): string | undefined {
+function roomOf(row: LetterRow | undefined): string | undefined {
   return row && (row.roomKey || row.bookingId)
 }
 
-function isRoomStart(rows: MailRow[], index: number): boolean {
+function isRoomStart(rows: LetterRow[], index: number): boolean {
   return roomOf(rows[index - 1]) !== roomOf(rows[index])
 }
 
-function isRoomEnd(rows: MailRow[], index: number): boolean {
+function isRoomEnd(rows: LetterRow[], index: number): boolean {
   return roomOf(rows[index + 1]) !== roomOf(rows[index])
 }
 
-function roomSize(rows: MailRow[], index: number): number {
+function roomSize(rows: LetterRow[], index: number): number {
   const room = roomOf(rows[index])
   const nextRoomIndex = rows.findIndex((row, rowIndex) => rowIndex > index && roomOf(row) !== room)
   return (nextRoomIndex === -1 ? rows.length : nextRoomIndex) - index

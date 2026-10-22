@@ -1,14 +1,17 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import type { WorkGroup } from '../../api/types'
 import { KIND_LABEL, STATUS_LABEL } from '../../domain/labels'
 import { formatMsk, formatStay } from '../../domain/time'
-import type { GroupView } from '../../domain/types'
-import { latestSnapshot, previousSnapshot, selectGroups } from '../../domain/view'
-import { useDemoStore } from '../../state/store'
+import { useWorkplace } from '../../state/workplace'
 import { Badge, Button, Drawer, EmptyState, cardClass } from '../../ui/kit'
 
 export function CorrectionsPage() {
-  const data = useDemoStore((state) => state.data)
+  const loaded = useWorkplace((state) => state.loaded)
+  const queue = useWorkplace((state) => state.groups)
+  const snapshots = useWorkplace((state) => state.snapshots)
+  const fetchCorrections = useWorkplace((state) => state.fetchCorrections)
+  const pushToast = useWorkplace((state) => state.pushToast)
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
   const basis = params.get('basis') === 'previous' ? 'previous' : 'baseline'
@@ -16,16 +19,36 @@ export function CorrectionsPage() {
   const [airport, setAirport] = useState(params.get('airport') ?? 'all')
   const [flat, setFlat] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
-  const [selected, setSelected] = useState<GroupView | null>(null)
-  const groups = useMemo(() => selectGroups(data, basis).filter((group) => group.changes.length > 0 || group.status === 'needs_baseline'), [basis, data])
-  const latest = latestSnapshot(data)
-  const previous = previousSnapshot(data)
+  const [selectedKey, setSelectedKey] = useState<string | null>(params.get('group'))
+  const [previousGroups, setPreviousGroups] = useState<WorkGroup[] | null>(null)
+  useEffect(() => {
+    if (basis !== 'previous' || !loaded) return
+    let active = true
+    fetchCorrections('previous')
+      .then((items) => {
+        if (active) setPreviousGroups(items)
+      })
+      .catch(() => pushToast('Сравнение со снимком не загрузилось'))
+    return () => {
+      active = false
+    }
+  }, [basis, fetchCorrections, loaded, pushToast, snapshots])
+  const source = useMemo(() => (basis === 'previous' ? (previousGroups ?? []) : queue), [basis, previousGroups, queue])
+  const groups = useMemo(() => source.filter((group) => group.changes.length > 0 || group.status === 'needs_baseline'), [source])
+  const needsBase = queue.some((group) => group.status === 'needs_baseline')
+  const [latest, previous] = snapshots
   const visible = groups.filter((group) => {
     if (airport !== 'all' && group.airportCode !== airport) return false
     if (!query.trim()) return true
     const haystack = `${group.hotel.name} ${group.changes.map((change) => change.fullName).join(' ')}`.toLowerCase()
     return haystack.includes(query.trim().toLowerCase())
   })
+  const groupByKey = new Map(source.map((group) => [group.groupKey, group]))
+  const selected = queue.find((group) => group.key === selectedKey) ?? source.find((group) => group.key === selectedKey) ?? null
+  const blocks = flat
+    ? [{ key: 'flat', changes: visible.flatMap((group) => group.changes), group: null }]
+    : visible.map((group) => ({ key: group.key, changes: group.changes, group }))
+  if (!loaded) return <p className="text-sm text-ink-soft">Загрузка…</p>
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -33,41 +56,44 @@ export function CorrectionsPage() {
           <h1 className="text-[28px] font-bold leading-9">Корректировки</h1>
           <p className="text-ink-soft">Сравнение размещения и рейсов</p>
         </div>
-        <Button tone="ghost" onClick={() => navigate('/overview')}>Сравнить выгрузки</Button>
+        <Button tone="ghost" onClick={() => navigate('/history?tab=snapshots')}>Сравнить выгрузки</Button>
       </div>
       <div className={`${cardClass} flex flex-wrap items-center gap-3`}>
-        <button type="button" className={`rounded-full px-3 py-2 text-sm ${basis === 'baseline' ? 'bg-brand-soft' : 'bg-muted'}`} onClick={() => setParams({ basis: 'baseline' })}>
+        <button type="button" className={`min-h-11 rounded-full px-3 py-2 text-sm ${basis === 'baseline' ? 'bg-brand-soft' : 'bg-muted'}`} onClick={() => setParams({ basis: 'baseline' })}>
           С последним уведомлённым состоянием
         </button>
-        <button type="button" className={`rounded-full px-3 py-2 text-sm ${basis === 'previous' ? 'bg-brand-soft' : 'bg-muted'}`} onClick={() => setParams({ basis: 'previous' })}>
+        <button type="button" className={`min-h-11 rounded-full px-3 py-2 text-sm ${basis === 'previous' ? 'bg-brand-soft' : 'bg-muted'}`} onClick={() => setParams({ basis: 'previous' })}>
           С последним полученным снимком
         </button>
         <span className="text-xs tabular-nums text-ink-soft">
-          {basis === 'previous' ? previous ? formatMsk(previous.fetchedAt) : 'второго снимка нет' : 'уведомлённая база'} → {latest ? formatMsk(latest.fetchedAt) : 'нет'}
+          {basis === 'previous' ? (previous ? formatMsk(previous.fetchedAt) : 'второго снимка нет') : 'уведомлённая база'} → {latest ? formatMsk(latest.fetchedAt) : 'нет'}
         </span>
-        {data.historicalCompare ? <Badge tone="info">Историческое сравнение не меняет очередь</Badge> : null}
       </div>
       <div className="flex flex-wrap gap-2">
-        <input className="h-10 rounded-xl bg-white px-3" placeholder="ФИО или рейс" value={query} aria-label="Поиск" onChange={(event) => setQuery(event.target.value)} />
-        <select className="h-10 rounded-xl bg-white px-3" value={airport} aria-label="Аэропорт" onChange={(event) => setAirport(event.target.value)}>
+        <input className="h-11 rounded-xl bg-white px-3" placeholder="ФИО или гостиница" value={query} aria-label="Поиск" onChange={(event) => setQuery(event.target.value)} />
+        <select className="h-11 rounded-xl bg-white px-3" value={airport} aria-label="Аэропорт" onChange={(event) => setAirport(event.target.value)}>
           <option value="all">Все аэропорты</option>
           {[...new Set(groups.map((group) => group.airportCode))].map((code) => <option key={code}>{code}</option>)}
         </select>
         <Button tone="ghost" onClick={() => setFlat((value) => !value)}>{flat ? 'По гостиницам' : 'Список изменений'}</Button>
         <Button tone="ghost" onClick={() => setCollapsed((value) => !value)}>{collapsed ? 'Развернуть все' : 'Свернуть все'}</Button>
       </div>
-      {!data.baselineEstablished && basis === 'baseline' ? <EmptyState title="Нельзя определить корректировки. Сначала выберите исходное состояние." /> : null}
-      {visible.length === 0 && data.baselineEstablished ? <EmptyState title="После проверки различий нет" action={<Button onClick={() => navigate('/overview')}>Проверить снова</Button>} /> : null}
+      {needsBase && basis === 'baseline' ? (
+        <EmptyState title="Нельзя определить корректировки. Сначала выберите исходное состояние." action={<Button onClick={() => navigate('/overview')}>Перейти к обзору</Button>} />
+      ) : null}
+      {visible.length === 0 && !(needsBase && basis === 'baseline') ? (
+        <EmptyState title={snapshots.length === 0 ? 'Данных ещё нет' : 'Различий нет'} action={<Button onClick={() => navigate('/overview')}>Загрузить Excel</Button>} />
+      ) : null}
       <div className="flex flex-col gap-4">
-        {(flat ? [{ key: 'flat', hotel: visible[0]?.hotel, changes: visible.flatMap((group) => group.changes), groups: visible }] : visible.map((group) => ({ key: group.key, hotel: group.hotel, changes: group.changes, groups: [group] }))).map((block) => (
+        {blocks.map((block) => (
           <section key={block.key} className={cardClass}>
-            {!flat && block.groups[0] ? (
-              <button type="button" className="mb-3 flex w-full items-center justify-between text-left" onClick={() => setSelected(block.groups[0])}>
+            {block.group ? (
+              <button type="button" className="mb-3 flex min-h-11 w-full items-center justify-between text-left" onClick={() => setSelectedKey(block.group.key)}>
                 <span>
-                  <span className="block text-lg font-bold">{block.groups[0].hotel.name}</span>
-                  <span className="text-xs text-ink-soft">{block.groups[0].airportCode} · {formatStay(block.groups[0].localStayDate)} · {block.changes.length}</span>
+                  <span className="block text-lg font-bold">{block.group.hotel.name}</span>
+                  <span className="text-xs text-ink-soft">{block.group.airportCode} · {formatStay(block.group.localStayDate)} · {block.changes.length}</span>
                 </span>
-                <Badge tone={block.groups[0].status}>{STATUS_LABEL[block.groups[0].status]}</Badge>
+                <Badge tone={block.group.status}>{STATUS_LABEL[block.group.status]}</Badge>
               </button>
             ) : null}
             {!collapsed ? (
@@ -75,21 +101,24 @@ export function CorrectionsPage() {
                 <table className="w-full min-w-[760px] text-left text-sm">
                   <thead className="text-xs text-ink-soft"><tr><th>ФИО</th>{flat ? <th>Гостиница</th> : null}<th>Тип</th><th>Было</th><th>Стало</th><th>Обнаружено</th></tr></thead>
                   <tbody>
-                    {block.changes.map((change) => (
-                      <tr key={change.id} className="border-t border-line align-top">
-                        <td className="py-3 pr-3" title={change.fullName}>
-                          {change.fullName}
-                          {change.replacementId ? <span className="ml-2 rounded-full bg-brand-soft px-2 py-0.5 text-xs">Замена</span> : null}
-                          {change.kind === 'cancelled' ? <span className="ml-2 rounded-full bg-[#fdecea] px-2 py-0.5 text-xs text-danger">Отмена</span> : null}
-                          {change.kind === 'added' ? <span className="ml-2 rounded-full bg-[#e5f6ee] px-2 py-0.5 text-xs text-ok">Новая</span> : null}
-                        </td>
-                        {flat ? <td>{change.groupKey.split('|')[0]} · {formatStay(change.groupKey.split('|')[2] ?? '')}</td> : null}
-                        <td>{KIND_LABEL[change.kind]}{change.linkedGroupKey ? ` → ${change.linkedGroupKey.split('|')[2]}` : ''}</td>
-                        <td className="text-ink-soft">{change.fields.map((field) => field.before).join(' · ') || '—'}</td>
-                        <td className="font-semibold">{change.fields.map((field) => `${field.label}: ${field.after}`).join(' · ')}</td>
-                        <td className="tabular-nums">{formatMsk(change.detectedAt)}</td>
-                      </tr>
-                    ))}
+                    {block.changes.map((change) => {
+                      const owner = groupByKey.get(change.groupKey)
+                      return (
+                        <tr key={change.id} className="border-t border-line align-top">
+                          <td className="py-3 pr-3" title={change.fullName}>
+                            {change.fullName}
+                            {change.replacement ? <span className="ml-2 rounded-full bg-brand-soft px-2 py-0.5 text-xs">Замена</span> : null}
+                            {change.kind === 'cancelled' ? <span className="ml-2 rounded-full bg-[#fdecea] px-2 py-0.5 text-xs text-danger">Отмена</span> : null}
+                            {change.kind === 'added' ? <span className="ml-2 rounded-full bg-[#e5f6ee] px-2 py-0.5 text-xs text-ok">Новая</span> : null}
+                          </td>
+                          {flat ? <td>{owner ? `${owner.hotel.name} · ${formatStay(owner.localStayDate)}` : '—'}</td> : null}
+                          <td>{KIND_LABEL[change.kind]}{change.linkedGroupKey ? ` → ${formatStay(change.linkedGroupKey.split('|')[2] ?? '')}` : ''}</td>
+                          <td className="text-ink-soft">{change.fields.map((field) => field.before).filter(Boolean).join(' · ') || '—'}</td>
+                          <td className="font-semibold">{change.fields.map((field) => `${field.label}: ${field.after || '—'}`).join(' · ')}</td>
+                          <td className="tabular-nums">{change.detectedAt ? formatMsk(change.detectedAt) : '—'}</td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -97,12 +126,13 @@ export function CorrectionsPage() {
           </section>
         ))}
       </div>
-      <Drawer open={Boolean(selected)} title={selected?.changes[0]?.fullName ?? 'Запись'} width={560} onClose={() => setSelected(null)}>
+      <Drawer open={Boolean(selected)} title={selected?.hotel.name ?? 'Группа'} width={560} onClose={() => setSelectedKey(null)}>
         {selected ? (
           <div className="flex flex-col gap-3 text-sm">
-            <p>{selected.hotel.name} · {selected.airportCode} · {formatStay(selected.localStayDate)}</p>
+            <p>{selected.airportCode} · {formatStay(selected.localStayDate)} · {selected.changes.length} изм.</p>
+            <Badge tone={selected.status}>{STATUS_LABEL[selected.status]}</Badge>
             {selected.exceptions.map((item) => <p key={item.id} className="text-danger">{item.message}</p>)}
-            <Button onClick={() => navigate(`/mail?group=${selected.key}&draft=${selected.draft?.id ?? ''}`)}>Открыть черновик</Button>
+            <Button onClick={() => navigate(`/mail?group=${selected.key}`)}>{selected.draftId ? 'Открыть черновик' : 'Перейти к письмам'}</Button>
             <Button tone="ghost" onClick={() => navigate(`/history?hotel=${selected.hotel.id}&date=${selected.localStayDate}`)}>История гостиницы</Button>
           </div>
         ) : null}

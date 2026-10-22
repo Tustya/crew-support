@@ -58,6 +58,28 @@ export function Badge({ tone, children }: { tone: string; children: ReactNode })
   return <span className={cx('inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold', BADGE[tone] ?? BADGE.info)}>{children}</span>
 }
 
+function useOverlayFocus(open: boolean, onClose: () => void) {
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const onCloseRef = useRef(onClose)
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
+  useEffect(() => {
+    if (!open) return
+    const previous = document.activeElement as HTMLElement | null
+    closeRef.current?.focus()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCloseRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      previous?.focus()
+    }
+  }, [open])
+  return closeRef
+}
+
 export function Dialog({
   open,
   title,
@@ -71,27 +93,14 @@ export function Dialog({
   children: ReactNode
   footer?: ReactNode
 }) {
-  const closeRef = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    if (!open) return
-    const previous = document.activeElement as HTMLElement | null
-    closeRef.current?.focus()
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      previous?.focus()
-    }
-  }, [open, onClose])
+  const closeRef = useOverlayFocus(open, onClose)
   if (!open) return null
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4" onMouseDown={onClose}>
       <div role="dialog" aria-modal="true" aria-label={title} className="max-h-[90vh] w-full max-w-xl overflow-auto rounded-3xl bg-white p-6 shadow-card" onMouseDown={(event) => event.stopPropagation()}>
         <div className="mb-4 flex items-start justify-between gap-4">
           <h2 className="text-lg font-bold leading-6">{title}</h2>
-          <button ref={closeRef} type="button" aria-label="Закрыть" className="rounded-xl px-2 py-1 text-ink-soft" onClick={onClose}>
+          <button ref={closeRef} type="button" aria-label="Закрыть" className="min-h-11 rounded-xl px-2 py-1 text-ink-soft" onClick={onClose}>
             Закрыть
           </button>
         </div>
@@ -115,20 +124,7 @@ export function Drawer({
   children: ReactNode
   width?: number
 }) {
-  const closeRef = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    if (!open) return
-    const previous = document.activeElement as HTMLElement | null
-    closeRef.current?.focus()
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      previous?.focus()
-    }
-  }, [open, onClose])
+  const closeRef = useOverlayFocus(open, onClose)
   if (!open) return null
   return (
     <div className="fixed inset-0 z-40 bg-ink/30" onMouseDown={onClose}>
@@ -142,7 +138,7 @@ export function Drawer({
       >
         <div className="flex items-center justify-between border-b border-line px-5 py-4">
           <h2 className="text-lg font-bold">{title}</h2>
-          <button ref={closeRef} type="button" aria-label="Закрыть" className="rounded-xl px-2 py-1" onClick={onClose}>
+          <button ref={closeRef} type="button" aria-label="Закрыть" className="min-h-11 rounded-xl px-2 py-1" onClick={onClose}>
             Закрыть
           </button>
         </div>

@@ -69,6 +69,17 @@ export function summarizeChanges(kinds: ChangeKind[]): string {
   return parts.join(', ')
 }
 
+const SOURCE_PROBLEM_LABEL: Record<string, string> = {
+  SOURCE_UNAVAILABLE: 'Источник не ответил',
+  SOURCE_NOT_READY: 'Данных ещё нет',
+  SOURCE_STALE: 'Выгрузка устарела',
+  SOURCE_NOT_TRUSTED: 'Последняя выгрузка не прошла проверку',
+}
+
+export function sourceProblemText(code: string): string {
+  return SOURCE_PROBLEM_LABEL[code] ?? 'Источник недоступен'
+}
+
 export function actorLabel(role: 'specialist' | 'lead'): string {
   return role === 'lead' ? 'Руководитель' : 'Сменный специалист'
 }

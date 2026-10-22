@@ -1,32 +1,37 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { KIND_LABEL, STATUS_LABEL, summarizeChanges } from '../../domain/labels'
+import type { WorkGroup } from '../../api/types'
+import { KIND_LABEL, STATUS_LABEL, sourceProblemText, statusRank, summarizeChanges } from '../../domain/labels'
 import { ageLabel, formatMsk, formatStay, mskDate, nextDate, pluralWord, remainingMinutes } from '../../domain/time'
-import type { GroupView } from '../../domain/types'
-import { selectGroups } from '../../domain/view'
-import { useDemoStore } from '../../state/store'
+import { useWorkplace } from '../../state/workplace'
 import { Badge, Banner, Button, Dialog, Drawer, EmptyState, cardClass } from '../../ui/kit'
 import { OVERVIEW_CARDS, matchesOverviewCard, overviewCardCount, type OverviewCard } from './overviewCards'
 
 export function OverviewPage() {
-  const data = useDemoStore((state) => state.data)
-  const startCalm = useDemoStore((state) => state.startCalm)
-  const runCheck = useDemoStore((state) => state.runCheck)
-  const recoverSource = useDemoStore((state) => state.recoverSource)
-  const importSample = useDemoStore((state) => state.importSample)
-  const setBaseline = useDemoStore((state) => state.setBaseline)
-  const prepareGroup = useDemoStore((state) => state.prepareGroup)
+  const loaded = useWorkplace((state) => state.loaded)
+  const nowIso = useWorkplace((state) => state.nowIso)
+  const allGroups = useWorkplace((state) => state.groups)
+  const letters = useWorkplace((state) => state.letters)
+  const source = useWorkplace((state) => state.source)
+  const journal = useWorkplace((state) => state.journal)
+  const snapshots = useWorkplace((state) => state.snapshots)
+  const integrations = useWorkplace((state) => state.integrations)
+  const busy = useWorkplace((state) => state.busy)
+  const refresh = useWorkplace((state) => state.refresh)
+  const establishBaseline = useWorkplace((state) => state.establishBaseline)
+  const prepareGroup = useWorkplace((state) => state.prepareGroup)
   const navigate = useNavigate()
   const [card, setCard] = useState<OverviewCard | null>(null)
   const [dates, setDates] = useState<'today' | 'tomorrow' | 'both'>('both')
   const [airport, setAirport] = useState('all')
   const [query, setQuery] = useState('')
   const [showDone, setShowDone] = useState(false)
-  const [selected, setSelected] = useState<GroupView | null>(null)
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [importOpen, setImportOpen] = useState(false)
-  const [upload, setUpload] = useState<{ name: string; size: number; at: string } | null>(null)
-  const groups = selectGroups(data)
-  const today = mskDate(data.clockIso)
+  const [baseOpen, setBaseOpen] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const groups = useMemo(() => [...allGroups].sort((left, right) => statusRank(left.status) - statusRank(right.status)), [allGroups])
+  const today = mskDate(nowIso)
   const tomorrow = nextDate(today)
   const visible = useMemo(() => {
     return groups.filter((group) => {
@@ -36,19 +41,21 @@ export function OverviewPage() {
       if (airport !== 'all' && group.airportCode !== airport) return false
       if (!matchesOverviewCard(group, card)) return false
       if (!query.trim()) return true
-      const haystack = `${group.hotel.name} ${group.hotel.city} ${group.latestBookings.map((booking) => booking.fullName).join(' ')}`.toLowerCase()
+      const haystack = `${group.hotel.name} ${group.hotel.city} ${group.crewNames.join(' ')}`.toLowerCase()
       return haystack.includes(query.trim().toLowerCase())
     })
   }, [airport, card, dates, groups, query, showDone, today, tomorrow])
-  if (data.phase !== 'running') {
-    return (
-      <EmptyState
-        title="Запустить демо-смену"
-        action={<Button onClick={startCalm}>Запустить демо-смену</Button>}
-      />
-    )
+  const selected = groups.find((group) => group.key === selectedKey) ?? null
+  const needsBase = groups.some((group) => group.status === 'needs_baseline')
+  const latest = snapshots[0]
+  const mailInApp = integrations.some((item) => item.adapter === 'mail' && item.configured)
+  const reload = async () => {
+    setRefreshing(true)
+    await refresh()
+    setRefreshing(false)
   }
-  const needsBase = !data.baselineEstablished
+  const openMail = (group: WorkGroup) => navigate(`/mail?group=${group.key}`)
+  if (!loaded) return <p className="text-sm text-ink-soft">Загрузка…</p>
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -57,8 +64,8 @@ export function OverviewPage() {
           <p className="text-ink-soft">Контроль корректировок размещения экипажей</p>
         </div>
         <div className="flex gap-2">
-          <Button onClick={runCheck} disabled={data.checking}>
-            {data.checking ? 'Проверяем…' : 'Проверить сейчас'}
+          <Button onClick={() => void reload()} disabled={refreshing}>
+            {refreshing ? 'Обновляем…' : 'Обновить'}
           </Button>
           <Button tone="ghost" onClick={() => setImportOpen(true)}>
             Загрузить Excel
@@ -66,16 +73,15 @@ export function OverviewPage() {
         </div>
       </div>
       <div className={`${cardClass} flex flex-wrap gap-6 text-sm`}>
-        <span>Источник: {data.settings.sourceMode === 'demo_api' ? 'демо-API' : 'ручные образцы'}</span>
-        <span className="tabular-nums">Последняя проверка: {data.lastSuccessAt ? formatMsk(data.lastSuccessAt) : 'нет'}</span>
-        <span className="tabular-nums">Следующая: {data.nextCheckAt ? formatMsk(data.nextCheckAt) : 'выключена'}</span>
-        <span>Почта: {data.settings.mailMode === 'in_app' ? 'демо в интерфейсе' : 'передача в клиент · демо'}</span>
+        <span>Источник: {latest?.source ?? 'нет данных'}</span>
+        <span className="tabular-nums">Последний снимок: {source?.lastSuccessAt ? formatMsk(source.lastSuccessAt) : 'нет'}</span>
+        <span>Почта: {mailInApp ? 'отправка в интерфейсе' : 'передача в клиент'}</span>
       </div>
-      {data.sourceStatus === 'error' ? (
-        <Banner tone="error">
-          Демо-API не ответил. Данные от {data.lastSuccessAt ? formatMsk(data.lastSuccessAt) : 'последнего снимка'} сохранены.
+      {source?.problem && groups.length > 0 ? (
+        <Banner tone={source.problem === 'SOURCE_UNAVAILABLE' ? 'error' : 'warn'}>
+          {sourceProblemText(source.problem)}. Данные от {source.lastSuccessAt ? formatMsk(source.lastSuccessAt) : 'последнего снимка'} сохранены.
           <span className="ml-3">
-            <Button tone="ghost" onClick={recoverSource}>Повторить</Button>
+            <Button tone="ghost" onClick={() => setImportOpen(true)}>Загрузить свежий Excel</Button>
           </span>
         </Banner>
       ) : null}
@@ -83,7 +89,7 @@ export function OverviewPage() {
         <Banner tone="info">
           Сначала выберите исходное состояние.
           <span className="ml-3">
-            <Button tone="soft" onClick={setBaseline}>Исходная рассылка уже выполнена</Button>
+            <Button disabled={busy === 'baseline'} onClick={() => setBaseOpen(true)}>Исходная рассылка уже выполнена</Button>
           </span>
         </Banner>
       ) : null}
@@ -97,29 +103,32 @@ export function OverviewPage() {
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <h2 className="mr-auto text-lg font-bold">Рабочая очередь · {visible.length}</h2>
           {(['both', 'today', 'tomorrow'] as const).map((value) => (
-            <button key={value} type="button" className={`rounded-full px-3 py-1 text-sm ${dates === value ? 'bg-brand-soft' : 'bg-muted'}`} onClick={() => setDates(value)}>
+            <button key={value} type="button" className={`min-h-11 rounded-full px-3 py-1 text-sm ${dates === value ? 'bg-brand-soft' : 'bg-muted'}`} onClick={() => setDates(value)}>
               {value === 'both' ? 'Обе даты' : value === 'today' ? 'Сегодня' : 'Завтра'}
             </button>
           ))}
-          <select className="h-10 rounded-xl bg-muted px-3" value={airport} onChange={(event) => setAirport(event.target.value)} aria-label="Аэропорт">
+          <select className="h-11 rounded-xl bg-muted px-3" value={airport} onChange={(event) => setAirport(event.target.value)} aria-label="Аэропорт">
             <option value="all">Все аэропорты</option>
             {[...new Set(groups.map((group) => group.airportCode))].map((code) => (
               <option key={code}>{code}</option>
             ))}
           </select>
-          <input className="h-10 rounded-xl bg-muted px-3" placeholder="Гостиница, город, ФИО" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Поиск" />
-          <label className="flex items-center gap-2 text-sm">
+          <input className="h-11 rounded-xl bg-muted px-3" placeholder="Гостиница, город, ФИО" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Поиск" />
+          <label className="flex min-h-11 items-center gap-2 text-sm">
             <input type="checkbox" checked={showDone} onChange={(event) => setShowDone(event.target.checked)} />
             Показать обработанные
           </label>
-          <button type="button" className="text-sm font-semibold text-brand-strong" onClick={() => { setCard(null); setDates('both'); setAirport('all'); setQuery(''); setShowDone(false) }}>
+          <button type="button" className="min-h-11 text-sm font-semibold text-brand-strong" onClick={() => { setCard(null); setDates('both'); setAirport('all'); setQuery(''); setShowDone(false) }}>
             Сбросить фильтры
           </button>
         </div>
         {visible.length === 0 && card ? (
           <EmptyState title="Здесь делать нечего" action={<Button tone="ghost" onClick={() => setCard(null)}>Показать все</Button>} />
         ) : visible.length === 0 ? (
-          <EmptyState title={groups.some((group) => group.changes.length > 0) ? 'Нет результатов' : 'Неуведомлённых изменений нет'} />
+          <EmptyState
+            title={groups.length === 0 ? 'Данных ещё нет' : groups.some((group) => group.changes.length > 0) ? 'Нет результатов' : 'Неуведомлённых изменений нет'}
+            action={groups.length === 0 ? <Button onClick={() => setImportOpen(true)}>Загрузить Excel</Button> : undefined}
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[880px] text-left text-sm">
@@ -140,9 +149,9 @@ export function OverviewPage() {
                     key={group.key}
                     tabIndex={0}
                     className="cursor-pointer border-t border-line hover:bg-muted focus:bg-brand-soft"
-                    onClick={() => setSelected(group)}
+                    onClick={() => setSelectedKey(group.key)}
                     onKeyDown={(event) => {
-                      if (event.key === 'Enter') setSelected(group)
+                      if (event.key === 'Enter') setSelectedKey(group.key)
                     }}
                   >
                     <td className="py-3 pr-3">
@@ -151,16 +160,16 @@ export function OverviewPage() {
                     </td>
                     <td className="tabular-nums" title={`${group.hotel.timezone} ${group.hotel.utcOffset}`}>{formatStay(group.localStayDate)}</td>
                     <td>{group.changes.length ? summarizeChanges(group.changes.map((change) => change.kind)) : '—'}</td>
-                    <td className="tabular-nums">{group.lastChangeAt ? `${formatMsk(group.lastChangeAt)} · ${ageLabel(group.lastChangeAt, data.clockIso)}` : '—'}</td>
-                    <td>{group.draft ? `черновик v${group.draft.revision}` : group.dueAt ? quietLabel(group.dueAt, data.clockIso) : '—'}</td>
+                    <td className="tabular-nums">{group.lastChangeAt ? `${formatMsk(group.lastChangeAt)} · ${ageLabel(group.lastChangeAt, nowIso)}` : '—'}</td>
+                    <td>{group.revision ? `черновик v${group.revision}` : group.dueAt ? quietLabel(group.dueAt, nowIso) : '—'}</td>
                     <td><Badge tone={group.status}>{STATUS_LABEL[group.status]}</Badge></td>
                     <td>
                       <button
                         type="button"
-                        className="font-semibold text-brand-strong"
+                        className="min-h-11 font-semibold text-brand-strong"
                         onClick={(event) => {
                           event.stopPropagation()
-                          openAction(group, data.clockIso, navigate, prepareGroup, setSelected)
+                          openAction(group, nowIso, { navigate, openMail, prepare: (key) => void prepareGroup(key), select: setSelectedKey, chooseBase: () => setBaseOpen(true) })
                         }}
                       >
                         {actionLabel(group)}
@@ -176,8 +185,9 @@ export function OverviewPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <section className={cardClass}>
           <h2 className="mb-3 text-lg font-bold">Последние события</h2>
+          {journal.length === 0 ? <p className="text-sm text-ink-soft">Событий ещё нет</p> : null}
           <ul className="flex flex-col gap-2 text-sm">
-            {data.activities.slice(0, 6).map((item) => (
+            {journal.slice(0, 6).map((item) => (
               <li key={item.id} className="flex justify-between gap-3 border-b border-line py-2">
                 <span>
                   <span className="tabular-nums text-ink-soft">{formatMsk(item.timestamp)}</span> {item.action}
@@ -190,74 +200,87 @@ export function OverviewPage() {
         </section>
         <section className={cardClass}>
           <h2 className="mb-3 text-lg font-bold">Источник</h2>
-          <p className="text-sm">Окно 06.10.2026 — 10.10.2026 · записей {data.snapshots.at(-1)?.bookings.length ?? 0}</p>
-          <p className="mt-2 text-sm tabular-nums">Успех: {data.lastSuccessAt ? formatMsk(data.lastSuccessAt) : 'нет'}</p>
-          <p className="text-sm tabular-nums">Ошибка: {data.lastErrorAt ? formatMsk(data.lastErrorAt) : 'нет'}</p>
-          <p className="mt-2 text-sm">База: {data.baselineEstablished ? 'подтверждена для демо' : 'не выбрана'}</p>
-          <button type="button" className="mt-3 text-sm font-semibold text-brand-strong" onClick={() => navigate('/history?tab=snapshots')}>
+          <p className="text-sm">
+            {latest?.windowFrom && latest.windowTo ? `Окно ${formatStay(latest.windowFrom)} — ${formatStay(latest.windowTo)} · ` : ''}записей {latest?.rowCount ?? 0}
+          </p>
+          <p className="mt-2 text-sm tabular-nums">Успех: {source?.lastSuccessAt ? formatMsk(source.lastSuccessAt) : 'нет'}</p>
+          <p className="text-sm">Ошибка: {source?.lastErrorCode ?? 'нет'}</p>
+          <p className="mt-2 text-sm">База: {groups.length === 0 ? 'нет данных' : needsBase ? 'не выбрана' : 'зафиксирована'}</p>
+          <button type="button" className="mt-3 min-h-11 text-sm font-semibold text-brand-strong" onClick={() => navigate('/history?tab=snapshots')}>
             История снимков
           </button>
         </section>
       </div>
-      <span className="sr-only">{today}</span>
-      <Drawer open={Boolean(selected)} title={selected?.hotel.name ?? 'Группа'} onClose={() => setSelected(null)}>
-        {selected ? <GroupBody group={selected} now={data.clockIso} onMail={() => navigate(`/mail?draft=${selected.draft?.id ?? ''}&group=${selected.key}`)} onHistory={() => navigate(`/history?hotel=${selected.hotel.id}&date=${selected.localStayDate}`)} onPrepare={() => prepareGroup(selected.key)} /> : null}
-      </Drawer>
-      <Dialog
-        open={importOpen}
-        title="Сравнить выгрузки"
-        onClose={() => setImportOpen(false)}
-        footer={
-          <>
-            <Button
-              onClick={() => {
-                importSample()
-                setImportOpen(false)
-              }}
-            >
-              Использовать демо-образцы
-            </Button>
-            <Button tone="ghost" disabled title="Структура ещё не согласована">
-              Сравнить файл
-            </Button>
-          </>
-        }
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className={cardClass}>Предыдущая · {data.snapshots.at(-2)?.label ?? 'нет'}</div>
-          <div className={cardClass}>Новая · {data.snapshots.at(-1)?.label ?? 'нет'}</div>
-        </div>
-        <label className="mt-4 block text-sm font-semibold">
-          Свой файл
-          <input
-            className="mt-2 block text-sm font-normal"
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={(event) => {
-              const file = event.target.files?.[0]
-              if (!file) return
-              setUpload({ name: file.name, size: file.size, at: formatMsk(data.clockIso) })
-            }}
+      <Drawer open={Boolean(selected)} title={selected?.hotel.name ?? 'Группа'} onClose={() => setSelectedKey(null)}>
+        {selected ? (
+          <GroupBody
+            group={selected}
+            hasDraft={Boolean(letters[selected.key])}
+            nowIso={nowIso}
+            preparing={busy === 'prepare'}
+            onMail={() => openMail(selected)}
+            onHistory={() => navigate(`/history?hotel=${selected.hotel.id}&date=${selected.localStayDate}`)}
+            onPrepare={() => void prepareGroup(selected.key)}
           />
-        </label>
-        {upload ? (
-          <p className="mt-3 text-sm">
-            {upload.name}, {upload.size} байт, {upload.at}. Структура ещё не согласована — сравнение недоступно.
-          </p>
         ) : null}
-      </Dialog>
+      </Drawer>
+      <BaselineDialog open={baseOpen} count={groups.filter((group) => group.status === 'needs_baseline').length} onClose={() => setBaseOpen(false)} onConfirm={() => { setBaseOpen(false); void establishBaseline() }} />
+      <ImportDialog open={importOpen} previous={snapshots[1]?.label} current={latest?.label} onClose={() => setImportOpen(false)} />
+    </div>
+  )
+}
+
+function ImportDialog({ open, previous, current, onClose }: { open: boolean; previous?: string; current?: string; onClose: () => void }) {
+  const importWorkbook = useWorkplace((state) => state.importWorkbook)
+  const busy = useWorkplace((state) => state.busy)
+  const [file, setFile] = useState<File | null>(null)
+  const upload = async () => {
+    if (!file) return
+    if (await importWorkbook(file)) {
+      setFile(null)
+      onClose()
+    }
+  }
+  return (
+    <Dialog
+      open={open}
+      title="Сравнить выгрузки"
+      onClose={onClose}
+      footer={
+        <Button disabled={!file || busy === 'import'} onClick={() => void upload()}>
+          {busy === 'import' ? 'Загружаем…' : 'Загрузить и сравнить'}
+        </Button>
+      }
+    >
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className={cardClass}>Предыдущая · {previous ?? 'нет'}</div>
+        <div className={cardClass}>Новая · {current ?? 'нет'}</div>
       </div>
+      <label className="mt-4 block text-sm font-semibold">
+        Файл Aviabit (.xlsx)
+        <input className="mt-2 block min-h-11 text-sm font-normal" type="file" accept=".xlsx" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+      </label>
+      {file ? <p className="mt-3 text-sm">{file.name}, {Math.ceil(file.size / 1024)} КБ</p> : null}
+    </Dialog>
+  )
+}
+
+function BaselineDialog({ open, count, onClose, onConfirm }: { open: boolean; count: number; onClose: () => void; onConfirm: () => void }) {
+  return (
+    <Dialog open={open} title="Исходное состояние" onClose={onClose} footer={<Button onClick={onConfirm}>Рассылка уже выполнена</Button>}>
+      <p className="text-sm">Последний снимок станет базой для {pluralWord(count, 'группы', 'групп', 'групп')}: {count}. Дальше в письма попадут только новые изменения.</p>
+    </Dialog>
   )
 }
 
 function quietLabel(dueAt: string, nowIso: string): string {
   const minutes = remainingMinutes(dueAt, nowIso)
-  return minutes > 0 ? `ещё ${minutes} мин` : 'тишина прошла'
+  return minutes > 0 ? `ещё ${minutes} мин` : 'пауза прошла'
 }
 
 function Stat({ title, value, unit, active, onClick }: { title: string; value: number; unit: string; active: boolean; onClick: () => void }) {
   return (
-    <button type="button" onClick={onClick} className={`${cardClass} text-left ${active ? 'ring-2 ring-brand-strong' : ''}`}>
+    <button type="button" onClick={onClick} aria-pressed={active} className={`${cardClass} text-left ${active ? 'ring-2 ring-brand-strong' : ''}`}>
       <span className="block text-3xl font-bold tabular-nums">{value}</span>
       <span className="text-xs text-ink-soft">{unit}</span>
       <span className="mt-2 block text-sm font-semibold">{title}</span>
@@ -265,45 +288,59 @@ function Stat({ title, value, unit, active, onClick }: { title: string; value: n
   )
 }
 
-function actionLabel(group: GroupView): string {
+function needsRecipient(group: WorkGroup): boolean {
+  return group.exceptions.some((item) => item.kind === 'no_address' || item.kind === 'no_contract' || item.kind === 'unknown_hotel')
+}
+
+function actionLabel(group: WorkGroup): string {
   if (group.status === 'needs_review') return 'Проверить письмо'
-  if (group.status === 'reviewed') return 'Открыть письмо'
+  if (group.status === 'reviewed' || group.status === 'handed_off') return 'Открыть письмо'
   if (group.status === 'stale') return 'Обновить черновик'
-  if (group.status === 'needs_decision') return group.exceptions.some((item) => item.kind === 'no_address' || item.kind === 'no_contract') ? 'Настроить получателя' : 'Разобрать'
+  if (group.status === 'needs_decision') return needsRecipient(group) ? 'Настроить получателя' : 'Разобрать'
   if (group.status === 'waiting') return 'Посмотреть изменения'
   if (group.status === 'needs_baseline') return 'Выбрать базу'
   return 'Посмотреть'
 }
 
-function openAction(group: GroupView, nowIso: string, navigate: (path: string) => void, prepareGroup: (key: string) => void, setSelected: (group: GroupView) => void) {
-  if (group.status === 'needs_review' || group.status === 'reviewed') {
-    navigate(`/mail?draft=${group.draft?.id ?? ''}&group=${group.key}`)
-    return
-  }
-  if (group.status === 'stale') {
-    navigate(`/mail?group=${group.key}`)
-    return
-  }
-  if (group.status === 'needs_decision' && group.exceptions.some((item) => item.kind === 'no_address' || item.kind === 'no_contract')) {
-    navigate(`/settings?tab=hotels&hotel=${group.hotel.id}`)
-    return
-  }
-  if (!group.draft && group.status === 'waiting' && group.dueAt && group.dueAt <= nowIso) prepareGroup(group.key)
-  setSelected(group)
+interface ActionHandlers {
+  navigate: (path: string) => void
+  openMail: (group: WorkGroup) => void
+  prepare: (key: string) => void
+  select: (key: string) => void
+  chooseBase: () => void
 }
 
-function GroupBody({ group, now, onMail, onHistory, onPrepare }: { group: GroupView; now: string; onMail: () => void; onHistory: () => void; onPrepare: () => void }) {
+function openAction(group: WorkGroup, nowIso: string, handlers: ActionHandlers) {
+  if (group.status === 'needs_review' || group.status === 'reviewed' || group.status === 'handed_off' || group.status === 'stale') {
+    handlers.openMail(group)
+    return
+  }
+  if (group.status === 'needs_baseline') {
+    handlers.chooseBase()
+    return
+  }
+  if (group.status === 'needs_decision' && needsRecipient(group)) {
+    handlers.navigate(`/settings?tab=hotels&hotel=${group.hotel.id}`)
+    return
+  }
+  if (!group.draftId && group.status === 'waiting' && group.dueAt && group.dueAt <= nowIso) handlers.prepare(group.key)
+  handlers.select(group.key)
+}
+
+function GroupBody({ group, hasDraft, nowIso, preparing, onMail, onHistory, onPrepare }: { group: WorkGroup; hasDraft: boolean; nowIso: string; preparing: boolean; onMail: () => void; onHistory: () => void; onPrepare: () => void }) {
+  const canPrepare = group.changes.length > 0 && !group.exceptions.some((item) => item.blocking)
   return (
     <div className="flex flex-col gap-4 text-sm">
       <p>{formatStay(group.localStayDate)} · {group.airportCode} · {group.hotel.recipients.join(', ') || 'адрес не задан'}</p>
       <Badge tone={group.status}>{STATUS_LABEL[group.status]}</Badge>
-      {group.dueAt ? <p className="tabular-nums">Тишина до {formatMsk(group.dueAt)} · {quietLabel(group.dueAt, now)}</p> : null}
+      {group.dueAt ? <p className="tabular-nums">Пауза до {formatMsk(group.dueAt)} · {quietLabel(group.dueAt, nowIso)}</p> : null}
+      {group.exceptions.map((item) => <p key={item.id} className="text-danger">{item.message}</p>)}
       <table className="w-full text-left">
         <thead className="text-xs text-ink-soft"><tr><th>Поле</th><th>Было</th><th>Стало</th></tr></thead>
         <tbody>
           {group.changes.flatMap((change) => change.fields.map((field) => (
             <tr key={`${change.id}-${field.field}`} className="border-t border-line">
-              <td className="py-2">{field.label}</td>
+              <td className="py-2">{change.fullName} · {field.label}</td>
               <td className="text-ink-soft">{field.before || '—'}</td>
               <td className="font-semibold">{field.after || '—'}</td>
             </tr>
@@ -313,7 +350,7 @@ function GroupBody({ group, now, onMail, onHistory, onPrepare }: { group: GroupV
       {group.changes.length === 0 ? <p>Изменений относительно уведомлённого состояния нет.</p> : null}
       <p className="text-xs text-ink-soft">{group.changes.map((change) => KIND_LABEL[change.kind]).join(', ')}</p>
       <div className="mt-auto flex gap-2">
-        <Button onClick={group.draft ? onMail : onPrepare}>{group.draft ? 'Открыть письмо' : 'Подготовить сейчас'}</Button>
+        {hasDraft ? <Button onClick={onMail}>Открыть письмо</Button> : <Button disabled={!canPrepare || preparing} onClick={onPrepare}>Подготовить сейчас</Button>}
         <Button tone="ghost" onClick={onHistory}>Вся история</Button>
       </div>
     </div>

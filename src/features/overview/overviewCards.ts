@@ -1,4 +1,6 @@
-import type { GroupView, QueueStatus } from '../../domain/types'
+import type { QueueStatus } from '../../domain/types'
+
+type CardGroup = { changes: unknown[]; status: QueueStatus }
 
 export type OverviewCard = 'review' | 'events' | 'waiting' | 'decision'
 
@@ -19,13 +21,13 @@ export const OVERVIEW_CARDS: { id: OverviewCard; title: string; unit: UnitForms 
   { id: 'decision', title: 'Разобрать вручную', unit: GROUP_UNIT },
 ]
 
-export function matchesOverviewCard(group: GroupView, card: OverviewCard | null): boolean {
+export function matchesOverviewCard(group: CardGroup, card: OverviewCard | null): boolean {
   if (card === null) return true
   if (card === 'events') return group.changes.length > 0
   return CARD_STATUSES[card].includes(group.status)
 }
 
-export function overviewCardCount(groups: GroupView[], card: OverviewCard): number {
+export function overviewCardCount(groups: CardGroup[], card: OverviewCard): number {
   if (card === 'events') return groups.reduce((sum, group) => sum + group.changes.length, 0)
   return groups.filter((group) => matchesOverviewCard(group, card)).length
 }

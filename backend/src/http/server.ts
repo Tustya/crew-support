@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { isIP } from 'node:net'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Pool } from 'pg'
 import type { AppConfig } from '../config.ts'
@@ -14,7 +15,7 @@ import { beginSend, confirmExternal, establishBaseline, finishSend, handoffDraft
 import { createHotel, holdException, patchHotel, patchSettings, publishTemplate, recordAcceptedImport, recordRejectedImport, resolveException } from '../services/directory.ts'
 import { loadState, projectGroups, sourceProblem, type Actor } from '../services/state.ts'
 import { runScheduler } from '../services/scheduler.ts'
-import { warmPasswordCheck } from '../domain/password.ts'
+import { AuthBusyError, warmPasswordCheck } from '../domain/password.ts'
 import { actorFromSession, clearedSessionCookie, loginWithPassword, logoutSession, readSessionToken, sessionCookie } from '../services/session.ts'
 
 const hits = new Map<string, number[]>()
@@ -41,6 +42,12 @@ export async function startServer(config: AppConfig): Promise<RunningServer> {
       sendError(res, error, correlationId)
     })
   })
+  server.requestTimeout = config.requestTimeoutMs
+  server.headersTimeout = config.headersTimeoutMs
+  server.on('connection', (socket) => {
+    socket.setTimeout(config.requestTimeoutMs)
+    socket.on('timeout', () => socket.destroy())
+  })
   await new Promise<void>((resolve) => server.listen(config.port, config.host, () => resolve()))
   const address = server.address()
   const port = typeof address === 'object' && address ? address.port : config.port
@@ -58,7 +65,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, pool: Pool, con
   const correlationId = correlation(req)
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   try {
-    if (!allowRate(req, config)) throw new HttpError(429, 'RATE_LIMITED', 'Слишком много запросов')
+    if (!allowRate(req, url, config)) throw new HttpError(429, 'RATE_LIMITED', 'Слишком много запросов')
     if (req.method === 'GET' && url.pathname === '/health/live') return send(res, 200, { status: 'live' }, correlationId)
     if (req.method === 'GET' && url.pathname === '/health/ready') {
       try {
@@ -664,11 +671,17 @@ function assertOrigin(req: IncomingMessage, config: AppConfig): void {
   throw new HttpError(403, 'ORIGIN_NOT_ALLOWED', 'Источник запроса не разрешён')
 }
 
-function allowRate(req: IncomingMessage, config: AppConfig): boolean {
-  const key = clientAddress(req)
+export function clearRateLimits(): void {
+  hits.clear()
+}
+
+function allowRate(req: IncomingMessage, url: URL, config: AppConfig): boolean {
+  const login = req.method === 'POST' && url.pathname === '/api/v1/session'
+  const key = `${login ? 'login:' : 'api:'}${clientAddress(req, config)}`
+  const limit = login ? config.loginRateLimitPerMinute : config.rateLimitPerMinute
   const now = Date.now()
   const recent = (hits.get(key) ?? []).filter((at) => at > now - 60_000)
-  if (recent.length >= config.rateLimitPerMinute) {
+  if (recent.length >= limit) {
     hits.set(key, recent)
     return false
   }
@@ -777,8 +790,24 @@ function assertCrewHeader(req: IncomingMessage): void {
   if (headerOne(req, 'x-crew-request') !== '1') throw new HttpError(403, 'ORIGIN_NOT_ALLOWED', 'Источник запроса не разрешён')
 }
 
-function clientAddress(req: IncomingMessage): string {
-  return (req.socket.remoteAddress ?? 'local').slice(0, 64) || 'local'
+function clientAddress(req: IncomingMessage, config: AppConfig): string {
+  const remote = normalizeAddress(req.socket.remoteAddress ?? '')
+  const forwarded = normalizeAddress(headerOne(req, 'x-real-ip') ?? '')
+  if (forwarded && remote && isIP(remote) && isIP(forwarded) && config.trustedProxies.check(remote, remote.includes(':') ? 'ipv6' : 'ipv4')) {
+    return forwarded.slice(0, 64)
+  }
+  return remote.slice(0, 64) || 'local'
+}
+
+function isClosedRequest(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const code = 'code' in error ? String(error.code) : ''
+  return code === 'ECONNRESET' || code === 'EPIPE' || code === 'ABORT_ERR' || error.message === 'aborted'
+}
+
+function normalizeAddress(value: string): string {
+  const trimmed = value.trim()
+  return trimmed.startsWith('::ffff:') ? trimmed.slice('::ffff:'.length) : trimmed
 }
 
 async function handleCredential(
@@ -799,17 +828,22 @@ async function handleCredential(
   const issued = await loginWithPassword(pool, config, {
     email: body.email,
     password: body.password,
-    ip: clientAddress(req),
+    ip: clientAddress(req, config),
     correlationId,
   })
   send(res, 200, profile(issued.actor), correlationId, { 'set-cookie': sessionCookie(issued.token, config.cookieSecure) })
 }
 
 function sendError(res: ServerResponse, error: unknown, correlationId: string): void {
+  if (res.destroyed || isClosedRequest(error)) return
   if (res.headersSent) return
   const pgCode = typeof error === 'object' && error && 'code' in error ? String(error.code) : ''
   if (pgCode === '23505') {
     send(res, 409, { error: { code: 'CONFLICT', message: 'Конфликт уникальности', correlationId } }, correlationId)
+    return
+  }
+  if (error instanceof AuthBusyError) {
+    send(res, 503, { error: { code: 'AUTH_BUSY', message: 'Вход временно перегружен', correlationId } }, correlationId)
     return
   }
   if (error instanceof HttpError) {

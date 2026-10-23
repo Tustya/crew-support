@@ -4,8 +4,8 @@ import { readConfig } from '../src/config.ts'
 import { createPool } from '../src/db/pool.ts'
 import { migrate } from '../src/db/migrate.ts'
 import { resetBusinessData } from '../src/db/reference.ts'
-import { hashPassword } from '../src/domain/password.ts'
-import { startServer, type RunningServer } from '../src/http/server.ts'
+import { hashPassword, verifyPassword } from '../src/domain/password.ts'
+import { clearRateLimits, startServer, type RunningServer } from '../src/http/server.ts'
 
 const databaseUrl = process.env.DATABASE_URL ?? 'postgres://crew:crew@127.0.0.1:54329/crew_support_test'
 const pepper = 'test-pepper-0123456789abcdef0123456789'
@@ -53,6 +53,7 @@ before(async () => {
     MAIL_ADAPTER: 'disabled',
     PORT: '0',
     RATE_LIMIT_PER_MINUTE: '10000',
+    LOGIN_RATE_LIMIT_PER_MINUTE: '10000',
   }, () => now))
 })
 
@@ -62,6 +63,7 @@ after(async () => {
 })
 
 beforeEach(async () => {
+  clearRateLimits()
   now = new Date('2026-10-23T08:00:00.000Z')
   await resetBusinessData(pool)
   await pool.query(
@@ -138,6 +140,26 @@ test('login without the crew header is refused and users cannot be registered', 
   assert.equal(bare.status, 403)
   const created = await sessionApi('/api/v1/users', { method: 'POST', body: { email: 'new@crew-support.local', password } })
   assert.equal(created.status, 404)
+})
+
+test('parallel failures cannot slip past the attempt limit', async () => {
+  const responses = await Promise.all(Array.from({ length: 12 }, () =>
+    sessionApi('/api/v1/session', { method: 'POST', body: { email: 'lead@crew-support.local', password: 'not-the-password' } }),
+  ))
+  const rejected = responses.filter((item) => item.status === 401)
+  const limited = responses.filter((item) => item.status === 429)
+  assert.ok(rejected.length <= 5)
+  assert.equal(rejected.length + limited.length, responses.length)
+  assert.ok(limited.length >= 1)
+})
+
+test('a full password queue answers busy instead of waiting', async () => {
+  const blockers = Array.from({ length: 18 }, () => verifyPassword('blocked', pepper, 'not-a-hash'))
+  await new Promise((resolve) => setImmediate(resolve))
+  const logged = await sessionApi('/api/v1/session', { method: 'POST', body: { email: 'lead@crew-support.local', password: 'not-the-password' } })
+  assert.equal(logged.status, 503)
+  assert.equal(errorOf(logged.body).code, 'AUTH_BUSY')
+  await Promise.allSettled(blockers)
 })
 
 test('an idle session is rejected', async () => {

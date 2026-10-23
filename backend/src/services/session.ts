@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import type { Pool, PoolClient } from 'pg'
 import type { AppConfig } from '../config.ts'
 import { sha256Hex } from '../domain/hash.ts'
-import { rejectUnknownPassword, verifyPassword } from '../domain/password.ts'
+import { AuthBusyError, rejectUnknownPassword, verifyPassword } from '../domain/password.ts'
 import { HttpError } from '../errors.ts'
 import { withTransaction } from '../db/pool.ts'
 import { writeAudit } from './audit.ts'
@@ -81,6 +81,8 @@ export async function loginWithPassword(
   const emailHash = sha256Hex(email)
   const ip = input.ip.slice(0, 64) || 'local'
   const gate = await withTransaction(pool, async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 1::bigint))', [emailHash])
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 2::bigint))', [ip])
     await client.query('DELETE FROM auth_attempts WHERE attempted_at < $1', [new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()])
     const counts = await client.query<{ email_failures: number; ip_failures: number }>(
       `SELECT
@@ -95,26 +97,34 @@ export async function loginWithPassword(
        FROM app_users WHERE email = $1`,
       [email],
     )
-    return {
-      limited: Number(counts.rows[0]?.email_failures ?? 0) >= EMAIL_FAILURE_LIMIT || Number(counts.rows[0]?.ip_failures ?? 0) >= IP_FAILURE_LIMIT,
-      user: user.rows[0] ?? null,
-    }
-  })
-  if (gate.limited) {
-    await withTransaction(pool, async (client) => {
+    const limited = Number(counts.rows[0]?.email_failures ?? 0) >= EMAIL_FAILURE_LIMIT || Number(counts.rows[0]?.ip_failures ?? 0) >= IP_FAILURE_LIMIT
+    if (limited) {
       await recordAttempt(client, emailHash, ip, false, now)
-      await writeAudit(client, auditInput(now, gate.user?.id ?? null, input.correlationId, 'denied', { reason: 'rate_limited' }))
-    })
-    throw new HttpError(429, 'RATE_LIMITED', 'Слишком много попыток. Подождите 15 минут.')
+      await writeAudit(client, auditInput(now, user.rows[0]?.id ?? null, input.correlationId, 'denied', { reason: 'rate_limited' }))
+      return { limited: true, user: user.rows[0] ?? null, attemptId: null }
+    }
+    const attemptId = await recordAttempt(client, emailHash, ip, false, now)
+    return { limited: false, user: user.rows[0] ?? null, attemptId }
+  })
+  if (gate.limited) throw new HttpError(429, 'RATE_LIMITED', 'Слишком много попыток. Подождите 15 минут.')
+  let matches = false
+  try {
+    matches = gate.user?.password_hash
+      ? await verifyPassword(password, config.authPepper, gate.user.password_hash)
+      : false
+    if (!gate.user?.password_hash) await rejectUnknownPassword(password, config.authPepper)
+  } catch (error) {
+    if (error instanceof AuthBusyError && gate.attemptId) {
+      await withTransaction(pool, async (client) => {
+        await client.query('DELETE FROM auth_attempts WHERE id = $1', [gate.attemptId])
+      })
+    }
+    throw error
   }
-  const matches = gate.user?.password_hash
-    ? await verifyPassword(password, config.authPepper, gate.user.password_hash)
-    : false
-  if (!gate.user?.password_hash) await rejectUnknownPassword(password, config.authPepper)
   const actor = gate.user && matches && gate.user.active ? toActor(gate.user) : null
   const token = actor ? randomBytes(32).toString('base64url') : ''
   await withTransaction(pool, async (client) => {
-    await recordAttempt(client, emailHash, ip, actor !== null, now)
+    if (actor && gate.attemptId) await client.query('UPDATE auth_attempts SET succeeded = true WHERE id = $1', [gate.attemptId])
     if (!actor) {
       await writeAudit(client, auditInput(now, gate.user?.id ?? null, input.correlationId, 'denied', { reason: 'bad_credentials' }))
       return
@@ -195,11 +205,12 @@ function normalizeEmail(value: unknown): string | null {
   return email
 }
 
-async function recordAttempt(client: PoolClient, emailHash: string, ip: string, succeeded: boolean, now: Date): Promise<void> {
-  await client.query(
-    'INSERT INTO auth_attempts (email_hash, ip, succeeded, attempted_at) VALUES ($1, $2, $3, $4)',
+async function recordAttempt(client: PoolClient, emailHash: string, ip: string, succeeded: boolean, now: Date): Promise<string> {
+  const inserted = await client.query<{ id: string | number }>(
+    'INSERT INTO auth_attempts (email_hash, ip, succeeded, attempted_at) VALUES ($1, $2, $3, $4) RETURNING id',
     [emailHash, ip, succeeded, now.toISOString()],
   )
+  return String(inserted.rows[0]?.id ?? '')
 }
 
 function auditInput(now: Date, actorId: string | null, correlationId: string, result: 'ok' | 'denied', details: Record<string, string>): {

@@ -1,3 +1,5 @@
+import { BlockList } from 'node:net'
+
 export type AuthMode = 'disabled' | 'mock' | 'password'
 
 export const DEV_AUTH_PEPPER = 'dev-only-pepper-change-me-000000'
@@ -21,6 +23,10 @@ export interface AppConfig {
   allowSyntheticRecipients: boolean
   unknownAfterSeconds: number
   rateLimitPerMinute: number
+  loginRateLimitPerMinute: number
+  trustedProxies: BlockList
+  requestTimeoutMs: number
+  headersTimeoutMs: number
   now: () => Date
 }
 
@@ -43,12 +49,27 @@ export function readConfig(env: NodeJS.ProcessEnv, now: () => Date = () => new D
     allowSyntheticRecipients: nodeEnv === 'test',
     unknownAfterSeconds: Number(env.UNKNOWN_AFTER_SECONDS ?? 120),
     rateLimitPerMinute: Number(env.RATE_LIMIT_PER_MINUTE ?? 120),
+    loginRateLimitPerMinute: Number(env.LOGIN_RATE_LIMIT_PER_MINUTE ?? 10),
+    trustedProxies: trustedProxyList(env.TRUSTED_PROXY_CIDRS ?? ''),
+    requestTimeoutMs: Number(env.REQUEST_TIMEOUT_MS ?? 30_000),
+    headersTimeoutMs: Math.min(Number(env.HEADERS_TIMEOUT_MS ?? 15_000), Number(env.REQUEST_TIMEOUT_MS ?? 30_000)),
     now,
   }
   assertSafeConfig(config)
   if (!config.databaseUrl) throw new Error('DATABASE_URL is required')
   if (config.authMode === 'password' && config.authPepper.length < 32) throw new Error('AUTH_PEPPER must be at least 32 characters')
   return config
+}
+
+function trustedProxyList(value: string): BlockList {
+  const list = new BlockList()
+  for (const item of value.split(',').map((entry) => entry.trim()).filter(Boolean)) {
+    const [address, prefix] = item.split('/')
+    if (!address || prefix === undefined) throw new Error('TRUSTED_PROXY_CIDRS entries must be address/prefix')
+    const family = address.includes(':') ? 'ipv6' : 'ipv4'
+    list.addSubnet(address, Number(prefix), family)
+  }
+  return list
 }
 
 export function assertSafeConfig(config: AppConfig): void {

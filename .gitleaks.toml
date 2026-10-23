@@ -1,0 +1,5 @@
+title = "crew-support"
+
+[allowlist]
+description = "Демо-пароль двух ролей оставлен по решению владельца"
+regexes = ['''8e9sVY7Ji1xoZxRL2ZU6''']

@@ -78,6 +78,16 @@ npm start
 
 `npm test` в `backend/` гоняет домен и HTTP против `crew_support_test` на том же порту. Контракт — `backend/openapi.yaml`. В production процесс не стартует с mock-входом, dev-перцем, sample-источником и почтой.
 
+## Зависимости
+
+Прямые зависимости сведены к минимуму: неиспользуемых runtime-пакетов нет, git- и file-зависимостей нет, пакеты только с `registry.npmjs.org`.
+
+API в рантайме тянет только `pg`. HTTP, scrypt и разбор XLSX — модули Node, без Express, ORM, клиента почты, Redis и отдельного парсера таблиц.
+
+Интерфейс в рантайме: React, React DOM, React Router, Zustand и шрифт Manrope из пакета. Комплекта компонентов и CDN нет.
+
+Сборка и тесты (`vite`, `vitest`, `typescript`, `tailwindcss`, `oxlint`) в образы API и nginx не входят. `jsdom` убран: тесты его не вызывают.
+
 ## Границы
 
 Сессия хранится в HttpOnly cookie, не в `localStorage`. Экипаж и письма туда не пишутся. Файл без согласованной шапки отклоняется. Почтовый шлюз выключен: письмо передаётся наружу и подтверждается вручную. В production mock-вход не стартует.

@@ -329,6 +329,17 @@ test('page limits must be whole numbers inside the allowed range', async () => {
   assert.ok(Array.isArray(audit.body.items))
 })
 
+test('exporting the journal records who downloaded it', async () => {
+  const exported = await fetch(`${server.url}/api/v1/audit/export`, { headers: { 'x-dev-subject': 'dev-specialist' } })
+  assert.equal(exported.status, 200)
+  const csv = await exported.text()
+  assert.match(csv, /occurred_at,actor,action,entity_type,result,group_key/)
+  const events = listed<{ action: string; display_name: string | null }>(await api('/api/v1/audit/events?limit=100'))
+  const recorded = events.find((item) => item.action === 'audit.exported')
+  assert.equal(typeof recorded?.display_name, 'string')
+  assert.ok(recorded?.display_name)
+})
+
 test('an oversized sheet is rejected and does not create a snapshot', async () => {
   const before = await pool.query('SELECT count(*)::int AS count FROM snapshots')
   const uploaded = await fetch(`${server.url}/api/v1/imports`, {

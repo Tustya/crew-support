@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { Pool } from 'pg'
 import type { AppConfig } from '../config.ts'
 import { buildCsv } from '../domain/csv.ts'
+import { writeAudit } from '../services/audit.ts'
 import { normalizeAviabitTable, ImportSchemaError } from '../domain/aviabit.ts'
 import { diffBookings, type CanonicalBooking } from '../domain/diff.ts'
 import { readFirstSheet, XlsxLimitError } from '../domain/xlsx.ts'
@@ -404,6 +405,18 @@ async function dispatch(
       ['occurred_at', 'actor', 'action', 'entity_type', 'result', 'group_key'],
       rows.rows.map((row) => [new Date(row.occurred_at).toISOString(), row.display_name ?? row.service_actor ?? 'system', row.action, row.entity_type, row.result, row.group_key ?? '']),
     )
+    await writeAudit(client, {
+      occurredAt: now.toISOString(),
+      actorId: actor.id,
+      serviceActor: null,
+      action: 'audit.exported',
+      entityType: 'audit_event',
+      entityId: null,
+      groupKey: null,
+      result: 'ok',
+      details: { rows: rows.rows.length },
+      correlationId,
+    })
     res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'x-content-type-options': 'nosniff', 'cache-control': 'no-store', 'x-correlation-id': correlationId })
     res.end(csv)
     return

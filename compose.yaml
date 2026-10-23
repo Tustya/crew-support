@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: crew
+      POSTGRES_PASSWORD: crew
+      POSTGRES_DB: crew_support
+    volumes:
+      - crew_support_pg:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crew -d crew_support"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgres://crew:crew@postgres:5432/crew_support
+      AUTH_MODE: mock
+      SOURCE_ADAPTER: sample
+      MAIL_ADAPTER: disabled
+      HOST: 0.0.0.0
+      PORT: "8080"
+      NODE_ENV: development
+      SCHEDULER_ENABLED: "false"
+      ALLOWED_ORIGINS: http://127.0.0.1:8080,http://localhost:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  crew_support_pg:

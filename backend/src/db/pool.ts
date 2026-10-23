@@ -7,6 +7,15 @@ types.setTypeParser(20, (value) => Number(value))
 
 export type Db = Pool | PoolClient
 
+export async function assertRuntimeRole(
+  client: { query: (sql: string) => Promise<{ rows: Array<{ rolsuper?: boolean }> }> },
+  nodeEnv: string,
+): Promise<void> {
+  if (nodeEnv !== 'production') return
+  const result = await client.query('SELECT rolsuper FROM pg_roles WHERE rolname = current_user')
+  if (result.rows[0]?.rolsuper) throw new Error('DB_SUPERUSER_FORBIDDEN')
+}
+
 export function createPool(databaseUrl: string): Pool {
   return new Pool({ connectionString: databaseUrl, max: 10, statement_timeout: 8_000 })
 }

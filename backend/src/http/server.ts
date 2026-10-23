@@ -9,7 +9,7 @@ import { normalizeAviabitTable, ImportSchemaError } from '../domain/aviabit.ts'
 import { diffBookings, type CanonicalBooking } from '../domain/diff.ts'
 import { readFirstSheet, XlsxLimitError } from '../domain/xlsx.ts'
 import { HttpError } from '../errors.ts'
-import { createPool, withTransaction } from '../db/pool.ts'
+import { assertRuntimeRole, createPool, withTransaction } from '../db/pool.ts'
 import { runImportedRows, runSampleCheck } from '../services/ingest.ts'
 import { loadDraftView, patchDraft, prepareGroup, rebuildDraft, reviewDraft } from '../services/drafts.ts'
 import { beginSend, confirmExternal, establishBaseline, finishSend, handoffDraft } from '../services/delivery.ts'
@@ -29,6 +29,12 @@ export interface RunningServer {
 export async function startServer(config: AppConfig): Promise<RunningServer> {
   if (config.authMode === 'password') await warmPasswordCheck(config.authPepper)
   const pool = createPool(config.databaseUrl)
+  try {
+    await assertRuntimeRole(pool, config.nodeEnv)
+  } catch (error) {
+    await pool.end()
+    throw error
+  }
   const timer = config.schedulerEnabled
     ? setInterval(() => {
         runScheduler(pool, config).catch((error: unknown) => {

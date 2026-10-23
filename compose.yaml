@@ -7,6 +7,7 @@ services:
       POSTGRES_DB: crew_support
     volumes:
       - crew_support_pg:/var/lib/postgresql
+      - ./backend/db-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U crew -d crew_support"]
       interval: 2s
@@ -21,7 +22,8 @@ services:
     build:
       context: ./backend
     environment:
-      DATABASE_URL: postgres://crew:crew@postgres:5432/crew_support
+      DATABASE_URL: postgres://crew_app:crew_app@postgres:5432/crew_support
+      MIGRATION_DATABASE_URL: postgres://crew_migrator:crew_migrator@postgres:5432/crew_support
       AUTH_MODE: password
       AUTH_PEPPER: dev-only-pepper-change-me-000000
       COOKIE_SECURE: "false"

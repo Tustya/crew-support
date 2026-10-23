@@ -12,6 +12,7 @@ import { templateProblems, defaultTemplate } from '../src/domain/templates.ts'
 import { nextQuietTimer } from '../src/domain/timer.ts'
 import { localIsoDate, stayInScope } from '../src/domain/time.ts'
 import { assertSafeConfig, DEV_AUTH_PEPPER, readConfig } from '../src/config.ts'
+import { assertRuntimeRole } from '../src/db/pool.ts'
 
 function booking(patch: Partial<CanonicalBooking> & Pick<CanonicalBooking, 'id' | 'fullName'>): CanonicalBooking {
   return {
@@ -165,6 +166,13 @@ test('csv neutralizes spreadsheet formulas and unknown template tokens are rejec
   const template = defaultTemplate('adjustment')
   template.blocks[0] = { kind: 'subject', text: 'Привет {password}' }
   assert.equal(templateProblems(template).some((problem) => problem.includes('{password}')), true)
+})
+
+test('production refuses a superuser database role', async () => {
+  const superuser = { query: async () => ({ rows: [{ rolsuper: true }] }) }
+  await assert.rejects(() => assertRuntimeRole(superuser, 'production'), /DB_SUPERUSER_FORBIDDEN/)
+  await assertRuntimeRole({ query: async () => ({ rows: [{ rolsuper: false }] }) }, 'production')
+  await assertRuntimeRole(superuser, 'development')
 })
 
 test('production boots fail-closed', () => {

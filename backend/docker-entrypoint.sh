@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-node src/db/migrate.ts
-node src/db/seed.ts
+migration_url="${MIGRATION_DATABASE_URL:-$DATABASE_URL}"
+DATABASE_URL="$migration_url" node src/db/migrate.ts
+DATABASE_URL="$migration_url" node src/db/seed.ts
 
 exec node src/main.ts

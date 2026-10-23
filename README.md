@@ -43,7 +43,7 @@ API слушает `0.0.0.0` только внутри сети Compose, с хо
 docker compose down
 ```
 
-Данные базы лежат в volume `crew_support_pg`. `docker compose down -v` удаляет их.
+Данные базы лежат в volume `crew_support_pg`. `docker compose down -v` удаляет их. Роли `crew_migrator` и `crew_app` создаёт init-скрипт только на пустом томе, поэтому существующий контур поднимается заново через `docker compose down -v`.
 
 ## Проверки и сборка
 

@@ -180,6 +180,16 @@ export async function establishBaseline(
   const group = await client.query<{ group_key: string; hotel_id: string | null }>('SELECT group_key, hotel_id FROM work_groups WHERE id = $1 FOR UPDATE', [input.groupId])
   const row = group.rows[0]
   if (!row) throw new HttpError(404, 'GROUP_NOT_FOUND', 'Группа не найдена')
+  const head = await client.query<{ validation_status: string; completeness: string; series_id: string; seq: number }>(
+    'SELECT validation_status, completeness, series_id, seq FROM snapshots WHERE id = $1',
+    [input.snapshotId],
+  )
+  const snapshot = head.rows[0]
+  if (!snapshot) throw new HttpError(404, 'SNAPSHOT_NOT_FOUND', 'Снимок не найден')
+  if (snapshot.completeness !== 'full') throw new HttpError(409, 'SNAPSHOT_NOT_FULL', 'Снимок неполный')
+  if (snapshot.validation_status !== 'accepted') throw new HttpError(409, 'SNAPSHOT_BLOCKED', 'Снимок не принят')
+  const newer = await client.query('SELECT id FROM snapshots WHERE series_id = $1 AND seq > $2 LIMIT 1', [snapshot.series_id, snapshot.seq])
+  if (newer.rows[0]) throw new HttpError(409, 'SNAPSHOT_STALE', 'Есть более новый снимок')
   const bookings = await client.query(
     `SELECT source_booking_id, source_crew_id, hotel_id, airport_code, stay_date::text, full_name, position, gender, arrival_flight,
             arrival_local_date::text, arrival_local_time::text, departure_flight, departure_local_date::text, departure_local_time::text,
@@ -187,7 +197,6 @@ export async function establishBaseline(
      FROM snapshot_bookings WHERE snapshot_id = $1`,
     [input.snapshotId],
   )
-  if (bookings.rows.length === 0) throw new HttpError(404, 'SNAPSHOT_NOT_FOUND', 'Снимок не найден')
   const payload: StoredPayload = {
     bookings: bookings.rows
       .map((item) => ({
@@ -216,6 +225,7 @@ export async function establishBaseline(
     roomPairs: [],
     letter: null,
   }
+  if (payload.bookings.length === 0) throw new HttpError(409, 'SNAPSHOT_GROUP_EMPTY', 'В снимке нет этой группы')
   const revisionNo = await writeBaseline(client, row.group_key, payload, null, 'manual_base', input.actor.id, input.now.toISOString(), input.evidence.trim())
   await refreshTimer(client, row.group_key, input.now.toISOString())
   await writeAudit(client, {

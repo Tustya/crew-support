@@ -218,7 +218,7 @@ export function OverviewPage() {
           />
         ) : null}
       </Drawer>
-      <BaselineDialog open={baseOpen} count={groups.filter((group) => group.status === 'needs_baseline').length} onClose={() => setBaseOpen(false)} onConfirm={() => { setBaseOpen(false); void establishBaseline() }} />
+      <BaselineDialog key={baseOpen ? 'open' : 'closed'} open={baseOpen} count={groups.filter((group) => group.status === 'needs_baseline').length} onClose={() => setBaseOpen(false)} onConfirm={(evidence) => { setBaseOpen(false); void establishBaseline(evidence) }} />
     </div>
   )
 }
@@ -235,10 +235,15 @@ function toQueueGroup(group: WorkGroup): QueueFilterGroup {
   }
 }
 
-function BaselineDialog({ open, count, onClose, onConfirm }: { open: boolean; count: number; onClose: () => void; onConfirm: () => void }) {
+function BaselineDialog({ open, count, onClose, onConfirm }: { open: boolean; count: number; onClose: () => void; onConfirm: (evidence: string) => void }) {
+  const [evidence, setEvidence] = useState('')
+  const ready = evidence.trim().length >= 3
   return (
-    <Dialog open={open} title="Исходное состояние" onClose={onClose} footer={<Button onClick={onConfirm}>Рассылка уже выполнена</Button>}>
-      <p className="text-sm">Последний снимок станет базой для {pluralWord(count, 'группы', 'групп', 'групп')}: {count}. Дальше в письма попадут только новые изменения.</p>
+    <Dialog open={open} title="Исходное состояние" onClose={onClose} footer={<Button disabled={!ready} onClick={() => onConfirm(evidence.trim())}>Зафиксировать · {count}</Button>}>
+      <label className="block text-sm font-semibold">
+        Основание
+        <textarea value={evidence} onChange={(event) => setEvidence(event.target.value)} className="mt-2 min-h-16 w-full rounded-xl bg-muted p-3 font-normal" />
+      </label>
     </Dialog>
   )
 }

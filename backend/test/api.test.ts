@@ -236,6 +236,34 @@ test('two saves of one revision conflict and ambiguous rows do not prepare a let
   assert.equal(cancelled.rows[0].count, 0)
 })
 
+test('a baseline accepts only the latest full snapshot for that group', async () => {
+  const first = await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'base' } })
+  const angel = await angelGroup()
+  const partial = await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'partial' } })
+  const partialBaseline = await api('/api/v1/baselines', { method: 'POST', body: { groupId: angel.id, snapshotId: partial.body.snapshotId, evidence: 'Неполный снимок', confirmed: true } })
+  assert.equal(partialBaseline.status, 409)
+  assert.equal((partialBaseline.body.error as { code: string }).code, 'SNAPSHOT_NOT_FULL')
+  const blocked = await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'ambiguous' } })
+  const blockedBaseline = await api('/api/v1/baselines', { method: 'POST', body: { groupId: angel.id, snapshotId: blocked.body.snapshotId, evidence: 'Закрытый снимок', confirmed: true } })
+  assert.equal(blockedBaseline.status, 409)
+  assert.equal((blockedBaseline.body.error as { code: string }).code, 'SNAPSHOT_BLOCKED')
+  await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'delayed' } })
+  const stale = await api('/api/v1/baselines', { method: 'POST', body: { groupId: angel.id, snapshotId: first.body.snapshotId, evidence: 'Старый снимок', confirmed: true } })
+  assert.equal(stale.status, 409)
+  assert.equal((stale.body.error as { code: string }).code, 'SNAPSHOT_STALE')
+  const empty = await pool.query<{ id: string }>(
+    `INSERT INTO snapshots (source_run_id, source, series_id, seq, fetched_at, hash, validation_status, completeness)
+     SELECT source_run_id, source, series_id, (SELECT max(seq) + 1 FROM snapshots WHERE series_id = s.series_id), fetched_at, 'empty-for-group', 'accepted', 'full'
+     FROM snapshots s WHERE id = $1 RETURNING id`,
+    [first.body.snapshotId],
+  )
+  const missing = await api('/api/v1/baselines', { method: 'POST', body: { groupId: angel.id, snapshotId: empty.rows[0]?.id, evidence: 'Чужая группа', confirmed: true } })
+  assert.equal(missing.status, 409)
+  assert.equal((missing.body.error as { code: string }).code, 'SNAPSHOT_GROUP_EMPTY')
+  const stored = await pool.query('SELECT count(*)::int AS count FROM notification_baselines')
+  assert.equal(stored.rows[0].count, 0)
+})
+
 test('an oversized sheet is rejected and does not create a snapshot', async () => {
   const before = await pool.query('SELECT count(*)::int AS count FROM snapshots')
   const uploaded = await fetch(`${server.url}/api/v1/imports`, {

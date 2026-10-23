@@ -61,7 +61,7 @@ interface WorkplaceState {
   dismissToast: (id: number) => void
   fetchCorrections: (basis: 'baseline' | 'previous') => Promise<WorkGroup[]>
   importWorkbook: (file: File) => Promise<boolean>
-  establishBaseline: () => Promise<void>
+  establishBaseline: (evidence: string) => Promise<void>
   prepareGroup: (groupKey: string) => Promise<void>
   saveLetter: (letter: Letter, edits: LetterEdits) => Promise<void>
   reviewLetter: (letter: Letter) => Promise<void>
@@ -194,13 +194,14 @@ export const useWorkplace = create<WorkplaceState>()((set, get) => {
         async () => api('/api/v1/imports', { method: 'POST', body: await file.arrayBuffer(), headers: { 'x-filename': encodeURIComponent(file.name) } }),
         `Файл ${file.name} загружен`,
       ),
-    establishBaseline: async () => {
+    establishBaseline: async (evidence) => {
       const snapshotId = get().source?.latestSnapshotId
       const pending = get().groups.filter((group) => group.status === 'needs_baseline')
-      if (!snapshotId || pending.length === 0) return
+      const basis = evidence.trim()
+      if (!snapshotId || pending.length === 0 || basis.length < 3) return
       await run(
         'baseline',
-        () => Promise.all(pending.map((group) => api('/api/v1/baselines', { method: 'POST', body: { groupId: group.key, snapshotId, evidence: 'Исходная рассылка выполнена до подключения', confirmed: true } }))),
+        () => Promise.all(pending.map((group) => api('/api/v1/baselines', { method: 'POST', body: { groupId: group.key, snapshotId, evidence: basis, confirmed: true } }))),
         'База зафиксирована',
       )
     },

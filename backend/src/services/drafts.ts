@@ -302,11 +302,16 @@ export async function rebuildDraft(
   input: { draftId: string; actor: Actor; now: Date; correlationId: string },
 ): Promise<{ revision: number; fingerprint: string }> {
   const draft = await lockDraft(client, input.draftId)
-  if (['sending', 'sent', 'handed_off', 'external_confirmed'].includes(draft.status)) throw new HttpError(409, 'DRAFT_LOCKED', 'Письмо нельзя пересобрать')
+  if (draft.status === 'sending') throw new HttpError(409, 'DRAFT_LOCKED', 'Письмо нельзя пересобрать')
   const state = await loadState(client)
   const groupId = state.groups.find((group) => group.groupKey === draft.group_key)?.id ?? ''
   const group = groupById(state, input.now, groupId)
   if (!group) throw new HttpError(404, 'GROUP_NOT_FOUND', 'Группа не найдена')
+  if (['sent', 'handed_off', 'external_confirmed'].includes(draft.status)) {
+    const version = await currentVersion(client, draft.id, draft.current_revision)
+    const drifted = version.source_fingerprint !== group.liveFingerprint || version.recipients_fingerprint !== group.recipientFingerprint || version.template_version !== state.settings.templateVersion
+    if (!drifted) throw new HttpError(409, 'DRAFT_LOCKED', 'Письмо нельзя пересобрать')
+  }
   const templateKey = pickTemplateKey(group.changes.map((change) => change.kind))
   const template = await loadTemplate(client, templateKey)
   const hotel = state.hotels.find((item) => item.id === group.hotel?.id)

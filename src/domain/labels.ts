@@ -14,7 +14,7 @@ export const KIND_LABEL: Record<ChangeKind, string> = {
 
 export const STATUS_LABEL: Record<QueueStatus, string> = {
   unchanged: 'Без изменений',
-  needs_baseline: 'Нужна база',
+  needs_baseline: 'Исходная не выбрана',
   waiting: 'Ожидание',
   preparing: 'Подготовка',
   needs_review: 'Требует проверки',
@@ -67,6 +67,12 @@ export function summarizeChanges(kinds: ChangeKind[]): string {
     parts.push(`${count} ${KIND_LABEL[key as ChangeKind].toLowerCase()}`)
   }
   return parts.join(', ')
+}
+
+export function summarizeKindCounts(kinds: ChangeKind[]): string {
+  const counts = new Map<ChangeKind, number>()
+  for (const kind of kinds) counts.set(kind, (counts.get(kind) ?? 0) + 1)
+  return [...counts].map(([kind, count]) => (count === 1 ? KIND_LABEL[kind] : `${KIND_LABEL[kind]} · ${count}`)).join(', ')
 }
 
 const SOURCE_PROBLEM_LABEL: Record<string, string> = {

@@ -5,7 +5,7 @@ import { STATUS_LABEL } from '../../domain/labels'
 import { formatMsk, formatStay, pluralWord } from '../../domain/time'
 import { useWorkplace } from '../../state/workplace'
 import { EmailPreview } from '../../ui/EmailPreview'
-import { Badge, Banner, Button, Dialog, EmptyState, cardClass, inputClass } from '../../ui/kit'
+import { Badge, Banner, Button, Dialog, EmptyState, Field, cardClass, inputClass } from '../../ui/kit'
 
 const TABS = [
   ['review', 'На проверке'],
@@ -115,6 +115,8 @@ function LetterEditor({ group, letter }: { group: WorkGroup; letter: Letter }) {
   const dirty = subject !== letter.subject || intro !== letter.intro || closing !== letter.closing || signature !== letter.signature || recipients !== letter.recipients.join(', ')
   const canReview = group.status === 'needs_review' && !dirty && !working
   const canDeliver = letter.status === 'reviewed' && group.status === 'reviewed' && !dirty && !working
+  const delivered = ['sending', 'sent', 'handed_off', 'external_confirmed'].includes(letter.status)
+  const canRebuild = !working && (!delivered || group.status === 'stale')
   const recipientList = recipients.split(/[\s,;]+/).filter(Boolean)
   return (
     <section className={`${cardClass} flex min-w-0 flex-col gap-4`}>
@@ -138,10 +140,10 @@ function LetterEditor({ group, letter }: { group: WorkGroup; letter: Letter }) {
       </div>
       {mode === 'edit' ? (
         <div className="flex flex-col gap-3">
-          <textarea className="min-h-16 rounded-xl bg-muted p-3" value={subject} onChange={(event) => setSubject(event.target.value)} aria-label="Тема" />
-          <textarea className="min-h-24 rounded-xl bg-muted p-3" value={intro} onChange={(event) => setIntro(event.target.value)} aria-label="Вступление" />
-          <textarea className="min-h-16 rounded-xl bg-muted p-3" value={closing} onChange={(event) => setClosing(event.target.value)} aria-label="Заключение" />
-          <textarea className="min-h-16 rounded-xl bg-muted p-3" value={signature} onChange={(event) => setSignature(event.target.value)} aria-label="Подпись" />
+          <Field label="Тема"><textarea className="min-h-16 rounded-xl bg-muted p-3 font-normal" value={subject} onChange={(event) => setSubject(event.target.value)} /></Field>
+          <Field label="Вступление"><textarea className="min-h-24 rounded-xl bg-muted p-3 font-normal" value={intro} onChange={(event) => setIntro(event.target.value)} /></Field>
+          <Field label="Заключение"><textarea className="min-h-16 rounded-xl bg-muted p-3 font-normal" value={closing} onChange={(event) => setClosing(event.target.value)} /></Field>
+          <Field label="Подпись"><textarea className="min-h-16 rounded-xl bg-muted p-3 font-normal" value={signature} onChange={(event) => setSignature(event.target.value)} /></Field>
         </div>
       ) : null}
       {mode === 'diff' ? (
@@ -174,9 +176,9 @@ function LetterEditor({ group, letter }: { group: WorkGroup; letter: Letter }) {
         {mailInApp ? (
           <Button tone="accent" disabled={!canDeliver} onClick={() => setConfirmSend(true)}>Отправить</Button>
         ) : (
-          <Button tone="accent" disabled={!canDeliver} onClick={() => void handoffLetter(letter)}>Передать в почту</Button>
+          <Button tone="ok" disabled={!canDeliver} onClick={() => void handoffLetter(letter)}>Передать в почту</Button>
         )}
-        <Button tone="soft" disabled={working} onClick={() => (letter.manualEdits ? setConfirmRebuild(true) : void rebuildLetter(letter))}>Обновить черновик</Button>
+        <Button tone="soft" disabled={!canRebuild} onClick={() => (letter.manualEdits ? setConfirmRebuild(true) : void rebuildLetter(letter))}>Обновить черновик</Button>
       </div>
       <Dialog open={confirmReview} title="Проверка письма" onClose={() => setConfirmReview(false)} footer={<Button onClick={() => { setConfirmReview(false); void reviewLetter(letter) }}>Проверены получатели, даты и все изменения</Button>}>
         <p className="text-sm">{group.hotel.name}, {formatStay(group.localStayDate)}, {recipients}</p>

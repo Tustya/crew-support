@@ -13,7 +13,7 @@ export function Button({
   title,
 }: {
   children: ReactNode
-  tone?: 'primary' | 'accent' | 'ghost' | 'soft'
+  tone?: 'primary' | 'accent' | 'ok' | 'ghost' | 'soft'
   disabled?: boolean
   onClick?: () => void
   type?: 'button' | 'submit'
@@ -22,6 +22,7 @@ export function Button({
   const tones = {
     primary: 'bg-brand-strong text-white hover:bg-[#006a9c]',
     accent: 'bg-accent text-white hover:bg-[#d10068]',
+    ok: 'bg-ok text-white hover:bg-[#0f6846]',
     ghost: 'bg-white text-ink border border-line hover:bg-muted',
     soft: 'bg-brand-soft text-ink hover:bg-[#c9ebf8]',
   }

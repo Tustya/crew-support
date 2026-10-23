@@ -269,6 +269,26 @@ test('scheduler prepares one draft and repeats the last sample without a second 
   assert.equal(snapshotsAfter.rows[0].count, snapshots.rows[0].count)
 })
 
+test('handed-off letter rebuilds only after newer data makes it stale', async () => {
+  const checked = await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'base' } })
+  const angel = await angelGroup()
+  await api('/api/v1/baselines', { method: 'POST', body: { groupId: angel.id, snapshotId: checked.body.snapshotId, evidence: 'Рассылка 06:00 зафиксирована', confirmed: true } })
+  await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'delayed' } })
+  const prepared = await api(`/api/v1/groups/${angel.id}/prepare`, { method: 'POST', body: { bypassQuiet: true, reason: 'Сверка со сменой' } })
+  const draft = await api(`/api/v1/drafts/${prepared.body.draftId}`)
+  await api(`/api/v1/drafts/${prepared.body.draftId}/review`, { method: 'POST', body: { revision: draft.body.revision, fingerprint: draft.body.fingerprint, confirmed: true } })
+  await api(`/api/v1/drafts/${prepared.body.draftId}/handoff`, { method: 'POST', body: { revision: draft.body.revision }, headers: { 'idempotency-key': randomUUID() } })
+  const blocked = await api(`/api/v1/drafts/${prepared.body.draftId}/rebuild`, { method: 'POST', body: {} })
+  assert.equal(blocked.status, 409)
+  assert.equal((blocked.body.error as { code: string }).code, 'DRAFT_LOCKED')
+  await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'delayed_more' } })
+  const rebuilt = await api(`/api/v1/drafts/${prepared.body.draftId}/rebuild`, { method: 'POST', body: {} })
+  assert.equal(rebuilt.status, 200)
+  const next = await api(`/api/v1/drafts/${prepared.body.draftId}`)
+  assert.equal(next.body.status, 'active')
+  assert.ok(Number(next.body.revision) > Number(draft.body.revision))
+})
+
 async function angelGroup(): Promise<{ id: string; changeCount: number; baselineBookings: Array<{ arrivalLocalTime: string }>; latestBookings: Array<{ arrivalLocalTime: string; fullName: string }> }> {
   const listed = await api('/api/v1/groups?limit=100')
   const group = (listed.body.items as Array<{ id: string; changeCount: number; baselineBookings: Array<{ arrivalLocalTime: string }> | null; latestBookings: Array<{ arrivalLocalTime: string; fullName: string }> }>).find((item) => item.latestBookings.some((booking) => booking.fullName.startsWith('Иванов')))

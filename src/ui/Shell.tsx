@@ -82,7 +82,7 @@ function Workspace({ displayName, onLeave }: { displayName: string; onLeave: () 
         </div>
       </header>
       <div className="shell-body pt-16">
-        <aside className="hidden min-h-[calc(100vh-4rem)] flex-col border-r border-line bg-white md:flex">
+        <aside className="sticky top-16 hidden h-[calc(100vh-4rem)] flex-col self-start overflow-y-auto border-r border-line bg-white md:flex">
           <nav className="flex flex-1 flex-col gap-1 p-2" aria-label="Разделы">
             {LINKS.map((link) => (
               <NavLink

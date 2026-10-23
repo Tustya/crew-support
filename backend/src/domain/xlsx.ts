@@ -1,23 +1,43 @@
 import { inflateRawSync } from 'node:zlib'
 
+const MAX_ENTRIES = 64
+const MAX_ENTRY_BYTES = 16 * 1024 * 1024
+const MAX_TOTAL_BYTES = 24 * 1024 * 1024
+const MAX_ROW = 5001
+const MAX_COLUMN = 64
+const MAX_SHARED_STRINGS = 50_000
+const SHEET_NAME = 'xl/worksheets/sheet1.xml'
+const STRINGS_NAME = 'xl/sharedstrings.xml'
+
+export class XlsxLimitError extends Error {
+  constructor() {
+    super('IMPORT_LIMIT_EXCEEDED')
+    this.name = 'XlsxLimitError'
+  }
+}
+
 export function readFirstSheet(bytes: Buffer): (string | number | null)[][] {
   const files = unzip(bytes)
-  const sheetPath = Object.keys(files).find((name) => /^xl\/worksheets\/sheet1\.xml$/i.test(name))
+  const sheetPath = Object.keys(files).find((name) => name.toLowerCase() === SHEET_NAME)
   if (!sheetPath) return []
-  const shared = readSharedStrings(files['xl/sharedStrings.xml'] ?? Buffer.alloc(0))
+  const sharedPath = Object.keys(files).find((name) => name.toLowerCase() === STRINGS_NAME)
+  const shared = readSharedStrings(files[sharedPath ?? ''] ?? Buffer.alloc(0))
   const xml = files[sheetPath].toString('utf8')
   const rows: (string | number | null)[][] = []
   for (const match of xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/g)) {
     const rowNumber = Number(/r="(\d+)"/.exec(match[1] ?? '')?.[1] ?? rows.length + 1)
+    if (!Number.isInteger(rowNumber) || rowNumber < 1 || rowNumber > MAX_ROW) throw new XlsxLimitError()
     const cells: (string | number | null)[] = []
     for (const cell of match[2].matchAll(/<c\b([^>]*)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
       const ref = /r="([A-Z]+)\d+"/.exec(cell[1] ?? '')
       const column = ref ? columnIndex(ref[1]) : cells.length
+      if (!Number.isSafeInteger(column) || column < 0 || column >= MAX_COLUMN) throw new XlsxLimitError()
       cells[column] = cellValue(cell[1] ?? '', cell[2] ?? '', shared)
     }
     rows[rowNumber - 1] = cells
   }
   const width = rows.reduce((max, row) => Math.max(max, row?.length ?? 0), 0)
+  if (width > MAX_COLUMN) throw new XlsxLimitError()
   return rows.map((row) => Array.from({ length: width }, (_, index) => row?.[index] ?? null))
 }
 
@@ -39,6 +59,7 @@ function readSharedStrings(bytes: Buffer): string[] {
   const xml = bytes.toString('utf8')
   const items: string[] = []
   for (const item of xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)) {
+    if (items.length >= MAX_SHARED_STRINGS) throw new XlsxLimitError()
     const parts = [...item[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((match) => decodeXml(match[1]))
     items.push(parts.join(''))
   }
@@ -60,25 +81,58 @@ function columnIndex(letters: string): number {
 
 function unzip(bytes: Buffer): Record<string, Buffer> {
   const eocd = bytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]))
-  if (eocd < 0) return {}
-  const count = bytes.readUInt16LE(eocd + 10)
-  let offset = bytes.readUInt32LE(eocd + 16)
+  if (eocd < 0 || eocd + 22 > bytes.length) throw new XlsxLimitError()
+  const count = readU16(bytes, eocd + 10)
+  if (count > MAX_ENTRIES) throw new XlsxLimitError()
+  let offset = readU32(bytes, eocd + 16)
   const files: Record<string, Buffer> = {}
+  let totalBytes = 0
   for (let index = 0; index < count; index += 1) {
-    if (bytes.readUInt32LE(offset) !== 0x02014b50) break
-    const method = bytes.readUInt16LE(offset + 10)
-    const compressedSize = bytes.readUInt32LE(offset + 20)
-    const nameLength = bytes.readUInt16LE(offset + 28)
-    const extraLength = bytes.readUInt16LE(offset + 30)
-    const commentLength = bytes.readUInt16LE(offset + 32)
-    const localOffset = bytes.readUInt32LE(offset + 42)
-    const name = bytes.subarray(offset + 46, offset + 46 + nameLength).toString('utf8')
-    const localNameLength = bytes.readUInt16LE(localOffset + 26)
-    const localExtraLength = bytes.readUInt16LE(localOffset + 28)
-    const dataStart = localOffset + 30 + localNameLength + localExtraLength
-    const compressed = bytes.subarray(dataStart, dataStart + compressedSize)
-    files[name] = method === 0 ? Buffer.from(compressed) : inflateRawSync(compressed)
-    offset += 46 + nameLength + extraLength + commentLength
+    if (readU32(bytes, offset) !== 0x02014b50) throw new XlsxLimitError()
+    const method = readU16(bytes, offset + 10)
+    if (method !== 0 && method !== 8) throw new XlsxLimitError()
+    const compressedSize = readU32(bytes, offset + 20)
+    const nameLength = readU16(bytes, offset + 28)
+    const extraLength = readU16(bytes, offset + 30)
+    const commentLength = readU16(bytes, offset + 32)
+    const localOffset = readU32(bytes, offset + 42)
+    const nameEnd = offset + 46 + nameLength
+    if (nameEnd + extraLength + commentLength > bytes.length) throw new XlsxLimitError()
+    const name = bytes.subarray(offset + 46, nameEnd).toString('utf8')
+    const normalized = name.toLowerCase()
+    if (normalized === SHEET_NAME || normalized === STRINGS_NAME) {
+      if (readU32(bytes, localOffset) !== 0x04034b50) throw new XlsxLimitError()
+      const localNameLength = readU16(bytes, localOffset + 26)
+      const localExtraLength = readU16(bytes, localOffset + 28)
+      const dataStart = localOffset + 30 + localNameLength + localExtraLength
+      if (dataStart + compressedSize > bytes.length) throw new XlsxLimitError()
+      const compressed = bytes.subarray(dataStart, dataStart + compressedSize)
+      const inflated = method === 0 ? Buffer.from(compressed) : inflateLimited(compressed)
+      if (inflated.length > MAX_ENTRY_BYTES) throw new XlsxLimitError()
+      totalBytes += inflated.length
+      if (totalBytes > MAX_TOTAL_BYTES) throw new XlsxLimitError()
+      files[name] = inflated
+    }
+    offset = nameEnd + extraLength + commentLength
   }
   return files
+}
+
+function inflateLimited(compressed: Buffer): Buffer {
+  try {
+    return inflateRawSync(compressed, { maxOutputLength: MAX_ENTRY_BYTES })
+  } catch (error) {
+    if (error instanceof XlsxLimitError) throw error
+    throw new XlsxLimitError()
+  }
+}
+
+function readU16(bytes: Buffer, offset: number): number {
+  if (offset < 0 || offset + 2 > bytes.length) throw new XlsxLimitError()
+  return bytes.readUInt16LE(offset)
+}
+
+function readU32(bytes: Buffer, offset: number): number {
+  if (offset < 0 || offset + 4 > bytes.length) throw new XlsxLimitError()
+  return bytes.readUInt32LE(offset)
 }

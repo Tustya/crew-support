@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { sheetWorkbook } from './support/xlsx-bytes.ts'
 import { randomUUID } from 'node:crypto'
 import { after, before, beforeEach, test } from 'node:test'
 import { readConfig } from '../src/config.ts'
@@ -202,7 +203,8 @@ test('historical compare and hostile input do not change stored state', async ()
   const csv = await exported.text()
   assert.match(csv, /'=SUM\(A1\)/)
   const uploaded = await fetch(`${server.url}/api/v1/imports`, { method: 'POST', headers: { 'x-dev-subject': 'dev-specialist', 'content-type': 'application/octet-stream', 'x-filename': '../secret.xlsx' }, body: Buffer.from('not-a-workbook') })
-  assert.equal(uploaded.status, 503)
+  assert.equal(uploaded.status, 422)
+  assert.equal(((await uploaded.json()) as { error: { code: string } }).error.code, 'IMPORT_LIMIT_EXCEEDED')
   const huge = await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'base', padding: 'x'.repeat(70_000) } })
   assert.equal(huge.status, 413)
   const origin = await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'base' }, headers: { origin: 'https://evil.example' } })
@@ -232,6 +234,21 @@ test('two saves of one revision conflict and ambiguous rows do not prepare a let
   await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'partial' } })
   const cancelled = await pool.query(`SELECT count(*)::int AS count FROM change_events WHERE kind = 'cancelled'`)
   assert.equal(cancelled.rows[0].count, 0)
+})
+
+test('an oversized sheet is rejected and does not create a snapshot', async () => {
+  const before = await pool.query('SELECT count(*)::int AS count FROM snapshots')
+  const uploaded = await fetch(`${server.url}/api/v1/imports`, {
+    method: 'POST',
+    headers: { 'x-dev-subject': 'dev-specialist', 'content-type': 'application/octet-stream', 'x-filename': 'row-bomb.xlsx' },
+    body: sheetWorkbook('<row r="1000000"><c r="A1"><v>1</v></c></row>'),
+  })
+  assert.equal(uploaded.status, 422)
+  assert.equal(((await uploaded.json()) as { error: { code: string } }).error.code, 'IMPORT_LIMIT_EXCEEDED')
+  const after = await pool.query('SELECT count(*)::int AS count FROM snapshots')
+  assert.equal(after.rows[0].count, before.rows[0].count)
+  const live = await fetch(`${server.url}/health/live`)
+  assert.equal(live.status, 200)
 })
 
 test('workbook import builds a queue and the second file moves the arrival', async () => {

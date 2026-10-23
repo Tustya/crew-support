@@ -5,7 +5,7 @@ import type { AppConfig } from '../config.ts'
 import { buildCsv } from '../domain/csv.ts'
 import { normalizeAviabitTable, ImportSchemaError } from '../domain/aviabit.ts'
 import { diffBookings, type CanonicalBooking } from '../domain/diff.ts'
-import { readFirstSheet } from '../domain/xlsx.ts'
+import { readFirstSheet, XlsxLimitError } from '../domain/xlsx.ts'
 import { HttpError } from '../errors.ts'
 import { createPool, withTransaction } from '../db/pool.ts'
 import { runImportedRows, runSampleCheck } from '../services/ingest.ts'
@@ -201,7 +201,14 @@ async function dispatch(
     requireRole(actor, ['specialist', 'lead'])
     const filename = decodedFilename(headerOne(req, 'x-filename'))
     const bytes = await readRaw(req, config.importLimitBytes)
-    const table = readFirstSheet(bytes)
+    let table: ReturnType<typeof readFirstSheet>
+    try {
+      table = readFirstSheet(bytes)
+    } catch (error) {
+      if (!(error instanceof XlsxLimitError)) throw error
+      const importId = await recordRejectedImport(client, actor, now, correlationId, { filename, bytes })
+      return send(res, 422, { error: { code: 'IMPORT_LIMIT_EXCEEDED', message: 'Файл превышает лимит разбора', details: { importId }, correlationId } }, correlationId)
+    }
     let normalized: ReturnType<typeof normalizeAviabitTable>
     try {
       normalized = normalizeAviabitTable(table)

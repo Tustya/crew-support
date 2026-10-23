@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:18-alpine
+    image: postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
     environment:
       POSTGRES_USER: crew
       POSTGRES_PASSWORD: crew
@@ -35,6 +35,13 @@ services:
       SCHEDULER_ENABLED: "false"
       ALLOWED_ORIGINS: http://127.0.0.1:8080,http://localhost:8080
       TRUSTED_PROXY_CIDRS: 172.31.28.0/24
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,8 +58,18 @@ services:
   web:
     build:
       context: .
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777
+      - /var/cache/nginx:mode=1777
+      - /var/run:mode=1777
+      - /var/log/nginx:mode=1777
     ports:
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8080:8080"
     depends_on:
       api:
         condition: service_healthy

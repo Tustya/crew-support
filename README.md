@@ -4,7 +4,7 @@
 
 ## Запуск
 
-Нужны Node.js 22+ и PostgreSQL на `127.0.0.1:54329` (контейнер `crew-support-pg`).
+Нужны Node.js 26 и PostgreSQL на `127.0.0.1:54329` (контейнер `crew-support-pg`).
 
 ```bash
 cd backend

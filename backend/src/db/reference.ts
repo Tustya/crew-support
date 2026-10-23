@@ -18,6 +18,8 @@ export async function resetBusinessData(pool: Pool): Promise<void> {
   try {
     await client.query('BEGIN')
     await client.query(`TRUNCATE TABLE
+      auth_attempts,
+      auth_sessions,
       delivery_attempts,
       notification_baselines,
       notifications,

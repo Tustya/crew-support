@@ -14,6 +14,8 @@ import { beginSend, confirmExternal, establishBaseline, finishSend, handoffDraft
 import { createHotel, holdException, patchHotel, patchSettings, publishTemplate, recordAcceptedImport, recordRejectedImport, resolveException } from '../services/directory.ts'
 import { loadState, projectGroups, sourceProblem, type Actor } from '../services/state.ts'
 import { runScheduler } from '../services/scheduler.ts'
+import { warmPasswordCheck } from '../domain/password.ts'
+import { actorFromSession, clearedSessionCookie, loginWithPassword, logoutSession, readSessionToken, sessionCookie } from '../services/session.ts'
 
 const hits = new Map<string, number[]>()
 
@@ -23,6 +25,7 @@ export interface RunningServer {
 }
 
 export async function startServer(config: AppConfig): Promise<RunningServer> {
+  if (config.authMode === 'password') await warmPasswordCheck(config.authPepper)
   const pool = createPool(config.databaseUrl)
   const timer = config.schedulerEnabled
     ? setInterval(() => {
@@ -68,6 +71,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, pool: Pool, con
     assertOrigin(req, config)
     const params = matchRoute(req.method ?? 'GET', url.pathname)
     if (!params) throw new HttpError(404, 'NOT_FOUND', 'Маршрут не найден')
+    if (params.route === 'login' || params.route === 'logout') {
+      await handleCredential(req, res, pool, config, params.route, correlationId)
+      return
+    }
     const reply = deferredReply()
     await withTransaction(pool, async (client) => {
       const actor = await authenticate(req, config, client)
@@ -115,7 +122,8 @@ async function dispatch(
 ): Promise<void> {
   const now = config.now()
   const route = params.route
-  if (route === 'me') return send(res, 200, { subject: actor.externalSubject, displayName: actor.displayName, role: actor.role, permissions: permissions(actor.role) }, correlationId)
+  if (config.authMode === 'password' && req.method !== 'GET' && req.method !== 'HEAD') assertCrewHeader(req)
+  if (route === 'me') return send(res, 200, profile(actor), correlationId)
   if (route === 'overview') {
     const state = await loadState(client)
     const groups = projectGroups(state, now, 'baseline')
@@ -471,6 +479,8 @@ async function dispatch(
 
 function matchRoute(method: string, pathname: string): Record<string, string> | null {
   const routes: Array<[string, string, string]> = [
+    ['POST', '/api/v1/session/logout', 'logout'],
+    ['POST', '/api/v1/session', 'login'],
     ['GET', '/api/v1/me', 'me'],
     ['GET', '/api/v1/overview', 'overview'],
     ['GET', '/api/v1/groups', 'groups'],
@@ -524,16 +534,23 @@ function matchRoute(method: string, pathname: string): Record<string, string> | 
 }
 
 async function authenticate(req: IncomingMessage, config: AppConfig, client: Parameters<Parameters<typeof withTransaction>[1]>[0]): Promise<Actor | null> {
-  if (config.authMode !== 'mock') throw new HttpError(401, 'AUTH_NOT_CONFIGURED', 'Корпоративный вход не настроен')
+  if (config.authMode === 'disabled') throw new HttpError(401, 'AUTH_NOT_CONFIGURED', 'Корпоративный вход не настроен')
+  if (config.authMode === 'password') {
+    const token = readSessionToken(headerOne(req, 'cookie'))
+    if (!token) throw new HttpError(401, 'UNAUTHENTICATED', 'Нет сессии')
+    const actor = await actorFromSession(client, token, config.now())
+    if (!actor) throw new HttpError(401, 'UNAUTHENTICATED', 'Нет сессии')
+    return actor
+  }
   const subject = headerOne(req, 'x-dev-subject')
   if (!subject) throw new HttpError(401, 'UNAUTHENTICATED', 'Нет сессии')
-  const result = await client.query<{ id: string; external_subject: string; display_name: string; role: Actor['role']; active: boolean }>(
-    'SELECT id, external_subject, display_name, role, active FROM app_users WHERE external_subject = $1',
+  const result = await client.query<{ id: string; external_subject: string; display_name: string; role: Actor['role']; active: boolean; position_title: string | null }>(
+    'SELECT id, external_subject, display_name, role, active, position_title FROM app_users WHERE external_subject = $1',
     [subject],
   )
   const user = result.rows[0]
   if (!user?.active) throw new HttpError(401, 'UNAUTHENTICATED', 'Нет сессии')
-  return { id: user.id, externalSubject: user.external_subject, displayName: user.display_name, role: user.role }
+  return { id: user.id, externalSubject: user.external_subject, displayName: user.display_name, role: user.role, positionTitle: user.position_title }
 }
 
 function requireRole(actor: Actor, roles: Array<Actor['role']>): void {
@@ -641,7 +658,7 @@ function assertOrigin(req: IncomingMessage, config: AppConfig): void {
 }
 
 function allowRate(req: IncomingMessage, config: AppConfig): boolean {
-  const key = headerOne(req, 'x-dev-subject') ?? req.socket.remoteAddress ?? 'local'
+  const key = clientAddress(req)
   const now = Date.now()
   const recent = (hits.get(key) ?? []).filter((at) => at > now - 60_000)
   if (recent.length >= config.rateLimitPerMinute) {
@@ -726,15 +743,59 @@ function correlation(req: IncomingMessage): string {
   return randomUUID()
 }
 
-function send(res: Reply, status: number, body: unknown, correlationId: string): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
+function send(res: Reply | ServerResponse, status: number, body: unknown, correlationId: string, extra: Record<string, string> = {}): void {
+  const headers: Record<string, string> = {
     'x-content-type-options': 'nosniff',
     'cache-control': 'no-store',
     'content-security-policy': "default-src 'none'",
     'x-correlation-id': correlationId,
+    ...extra,
+  }
+  if (status !== 204) headers['content-type'] = 'application/json; charset=utf-8'
+  res.writeHead(status, headers)
+  res.end(status === 204 ? '' : JSON.stringify(body))
+}
+
+function profile(actor: Actor) {
+  return {
+    subject: actor.externalSubject,
+    displayName: actor.displayName,
+    role: actor.role,
+    position: actor.positionTitle ?? null,
+    permissions: permissions(actor.role),
+  }
+}
+
+function assertCrewHeader(req: IncomingMessage): void {
+  if (headerOne(req, 'x-crew-request') !== '1') throw new HttpError(403, 'ORIGIN_NOT_ALLOWED', 'Источник запроса не разрешён')
+}
+
+function clientAddress(req: IncomingMessage): string {
+  return (req.socket.remoteAddress ?? 'local').slice(0, 64) || 'local'
+}
+
+async function handleCredential(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pool: Pool,
+  config: AppConfig,
+  route: string,
+  correlationId: string,
+): Promise<void> {
+  assertCrewHeader(req)
+  if (route === 'logout') {
+    await logoutSession(pool, config, readSessionToken(headerOne(req, 'cookie')), correlationId)
+    send(res, 204, null, correlationId, { 'set-cookie': clearedSessionCookie(config.cookieSecure) })
+    return
+  }
+  const body = await readJson(req, config.bodyLimitBytes)
+  const issued = await loginWithPassword(pool, config, {
+    email: body.email,
+    password: body.password,
+    ip: clientAddress(req),
+    correlationId,
   })
-  res.end(JSON.stringify(body))
+  send(res, 200, profile(issued.actor), correlationId, { 'set-cookie': sessionCookie(issued.token, config.cookieSecure) })
 }
 
 function sendError(res: ServerResponse, error: unknown, correlationId: string): void {

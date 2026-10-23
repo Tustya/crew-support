@@ -3,12 +3,13 @@ info:
   title: Crew Support API
   version: 0.1.0
   description: |
-    Локальный API смены. Префикс /api/v1. Производство fail-closed: нет Aviabit, SSO и SMTP.
+    Локальный API смены. Префикс /api/v1. Производство fail-closed: нет Aviabit и SMTP. Вход — почта и пароль, сессия в cookie.
     Экраны: очередь GET /groups, сравнение GET /snapshots/compare, письмо /drafts, справочник /hotels, настройки /settings.
 servers:
   - url: http://127.0.0.1:8080
 security:
   - devSubject: []
+  - sessionCookie: []
 tags:
   - name: health
   - name: queue
@@ -42,6 +43,48 @@ paths:
           description: База доступна
         '503':
           description: База недоступна
+  /api/v1/session:
+    post:
+      tags: [queue]
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  maxLength: 200
+      responses:
+        '200':
+          description: Сессия создана, профиль в теле, токен только в Set-Cookie
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
+  /api/v1/session/logout:
+    post:
+      tags: [queue]
+      operationId: logout
+      security: []
+      responses:
+        '204':
+          description: Сессия отозвана
   /api/v1/me:
     get:
       tags: [queue]
@@ -671,6 +714,11 @@ components:
       in: header
       name: X-Dev-Subject
       description: Только AUTH_MODE=mock вне production. X-Role и поле role в теле не читаются.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: crew_session
+      description: AUTH_MODE=password. Cookie HttpOnly, SameSite=Strict. Мутации требуют заголовок X-Crew-Request со значением 1. X-Dev-Subject и X-Role не читаются.
   parameters:
     id:
       name: id
@@ -741,12 +789,17 @@ components:
           type: integer
     Me:
       type: object
-      required: [subject, displayName, role, permissions]
+      required: [subject, displayName, role, position, permissions]
       properties:
         subject:
           type: string
         displayName:
           type: string
+          description: ФИО
+        position:
+          type: string
+          nullable: true
+          description: Должность
         role:
           type: string
           enum: [specialist, lead, system]

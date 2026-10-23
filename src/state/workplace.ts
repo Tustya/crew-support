@@ -172,6 +172,7 @@ export const useWorkplace = create<WorkplaceState>()((set, get) => {
         })
       } catch (reason) {
         set({ loaded: true })
+        if (reason instanceof ApiError && reason.status === 401) return
         get().pushToast(message(reason))
       }
     },

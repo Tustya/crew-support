@@ -4,7 +4,7 @@
 
 ## Fail-closed
 
-- `AUTH_MODE` в production только `disabled`. Заголовок `X-Dev-Subject` читается лишь при `mock` вне production. `X-Role`, `role` и `actor` из запроса не назначают права. Роль берётся из `app_users`.
+- `AUTH_MODE=mock` в production не стартует. `password` разрешён только с `AUTH_PEPPER` длиннее 31 символа и не равным dev-перцу. `X-Dev-Subject` читается лишь при `mock` вне production. В режиме `password` сессия — HttpOnly cookie, в базе хранится только SHA-256 токена и scrypt-хеш пароля. `X-Role`, `role` и `actor` из запроса не назначают права. Роль берётся из `app_users`. Мутации с cookie требуют `X-Crew-Request: 1`.
 - `SOURCE_ADAPTER` в production только `disabled`. `sample` — синтетические фикстуры, не Aviabit.
 - `MAIL_ADAPTER` в production только `disabled`. `scripted` разрешён в тесте. Исход `X-Test-Mail-Outcome` вне scripted/не-production игнорируется. `delivery_unknown` не двигает базу и блокирует новый ключ.
 - `POST /imports` сохраняет хэш, размер и очищенное имя. Байты файла не пишутся. Разбор XLSX не выполняется, ответ `503 SOURCE_SCHEMA_UNVERIFIED`.
@@ -23,7 +23,7 @@
 
 Рабочий интерфейс, когда его подключат, обязан:
 
-- звать `GET /api/v1/me` и не принимать роль из клиента;
+- входить через `POST /api/v1/session` и звать `GET /api/v1/me`, не принимая роль из клиента;
 - не писать экипаж и письма в `localStorage`;
 - не показывать успех отправки, пока `GET /notifications/{id}` не вернул известный итог;
 - не вызывать сеть из демо-кнопок.

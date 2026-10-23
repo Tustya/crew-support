@@ -11,7 +11,7 @@ cd backend
 npm install
 npm run migrate
 npm run seed
-DATABASE_URL=postgres://crew:crew@127.0.0.1:54329/crew_support AUTH_MODE=mock SOURCE_ADAPTER=sample MAIL_ADAPTER=disabled PORT=8081 npm start
+DATABASE_URL=postgres://crew:crew@127.0.0.1:54329/crew_support AUTH_MODE=password AUTH_PEPPER=dev-only-pepper-change-me-000000 COOKIE_SECURE=false SOURCE_ADAPTER=sample MAIL_ADAPTER=disabled PORT=8081 npm start
 ```
 
 ```bash
@@ -19,17 +19,23 @@ npm install
 npm run dev
 ```
 
-Откройте http://127.0.0.1:5173/ и войдите как специалист или старший смены. Роль отдаёт `GET /api/v1/me`. Выгрузки: `backend/fixtures/01-initial.xlsx`, затем `backend/fixtures/02-changes.xlsx`. В файлах есть колонки «Идентификатор брони» и «Код гостиницы» (`angel`, `bereg`). Без них строка не попадает в очередь.
+Откройте http://127.0.0.1:5173/ и войдите почтой. Роль отдаёт `GET /api/v1/me`.
+
+- Старший смены: `lead@crew-support.local`, Соколов Андрей Викторович
+- Специалист смены: `specialist@crew-support.local`, Орлова Елена Павловна
+- Пароль обеих ролей: `8e9sVY7Ji1xoZxRL2ZU6`
+
+Выгрузки: `backend/fixtures/01-initial.xlsx`, затем `backend/fixtures/02-changes.xlsx`. В файлах есть колонки «Идентификатор брони» и «Код гостиницы» (`angel`, `bereg`). Без них строка не попадает в очередь.
 
 ## Docker
 
-Локальный контур целиком: PostgreSQL 18, API и собранный интерфейс за nginx. Это не production: mock-вход, sample-источник и пароль `crew:crew` там не стартуют.
+Локальный контур целиком: PostgreSQL 18, API и собранный интерфейс за nginx. Это не production: dev-перец, sample-источник и пароль `crew:crew` там не стартуют.
 
 ```bash
 docker compose up --build
 ```
 
-Откройте http://127.0.0.1:8080/ и войдите как специалист или старший смены. Выгрузки по-прежнему `backend/fixtures/01-initial.xlsx`, затем `backend/fixtures/02-changes.xlsx` — их выбирают в интерфейсе.
+Откройте http://127.0.0.1:8080/ и войдите почтой `lead@crew-support.local` или `specialist@crew-support.local`, пароль `8e9sVY7Ji1xoZxRL2ZU6`. Выгрузки по-прежнему `backend/fixtures/01-initial.xlsx`, затем `backend/fixtures/02-changes.xlsx` — их выбирают в интерфейсе.
 
 API слушает `0.0.0.0` только внутри сети Compose, с хоста доступен порт `127.0.0.1:8080`. При первом старте применяются миграции и справочник. Повторный запуск справочник не перезаписывает.
 
@@ -70,8 +76,8 @@ npm run seed
 npm start
 ```
 
-`npm test` в `backend/` гоняет домен и HTTP против `crew_support_test` на том же порту. Контракт — `backend/openapi.yaml`. В production процесс не стартует с mock-входом, sample-источником и почтой.
+`npm test` в `backend/` гоняет домен и HTTP против `crew_support_test` на том же порту. Контракт — `backend/openapi.yaml`. В production процесс не стартует с mock-входом, dev-перцем, sample-источником и почтой.
 
 ## Границы
 
-В сессии браузера хранится только субъект входа, не экипаж и не письма. Файл без согласованной шапки отклоняется. Почтовый шлюз выключен: письмо передаётся наружу и подтверждается вручную. В production mock-вход не стартует.
+Сессия хранится в HttpOnly cookie, не в `localStorage`. Экипаж и письма туда не пишутся. Файл без согласованной шапки отклоняется. Почтовый шлюз выключен: письмо передаётся наружу и подтверждается вручную. В production mock-вход не стартует.

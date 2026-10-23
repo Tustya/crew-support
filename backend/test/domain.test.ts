@@ -11,7 +11,7 @@ import { assignRooms } from '../src/domain/rooms.ts'
 import { templateProblems, defaultTemplate } from '../src/domain/templates.ts'
 import { nextQuietTimer } from '../src/domain/timer.ts'
 import { localIsoDate, stayInScope } from '../src/domain/time.ts'
-import { assertSafeConfig, readConfig } from '../src/config.ts'
+import { assertSafeConfig, DEV_AUTH_PEPPER, readConfig } from '../src/config.ts'
 
 function booking(patch: Partial<CanonicalBooking> & Pick<CanonicalBooking, 'id' | 'fullName'>): CanonicalBooking {
   return {
@@ -132,10 +132,17 @@ test('csv neutralizes spreadsheet formulas and unknown template tokens are rejec
 
 test('production boots fail-closed', () => {
   assert.throws(() => readConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://crew:crew@127.0.0.1/db', AUTH_MODE: 'mock' }))
+  assert.throws(() => readConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://app@db/app', AUTH_MODE: 'password', AUTH_PEPPER: 'short' }))
+  assert.throws(() => readConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://app@db/app', AUTH_MODE: 'password', AUTH_PEPPER: DEV_AUTH_PEPPER }))
+  const password = readConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://app@db/app', AUTH_MODE: 'password', AUTH_PEPPER: 'production-pepper-0123456789abcdef' })
+  assert.equal(password.authMode, 'password')
+  assert.equal(password.cookieSecure, true)
   assert.throws(() => assertSafeConfig({
     nodeEnv: 'production',
     databaseUrl: 'postgres://app@db/app',
     authMode: 'disabled',
+    authPepper: '',
+    cookieSecure: true,
     sourceAdapter: 'sample',
     mailAdapter: 'disabled',
     host: '127.0.0.1',

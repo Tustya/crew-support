@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { api, currentSubject } from '../../api/client'
+import { api } from '../../api/client'
 import type { ChangeDto, Notice } from '../../api/types'
 import { KIND_LABEL } from '../../domain/labels'
 import { formatMsk, formatStay } from '../../domain/time'
@@ -43,7 +43,7 @@ export function HistoryPage() {
   const eventGroup = groups.find((group) => group.groupKey === event?.groupKey)
   const exportJournal = async () => {
     try {
-      const response = await fetch('/api/v1/audit/export', { headers: { 'x-dev-subject': currentSubject() ?? '' } })
+      const response = await fetch('/api/v1/audit/export', { credentials: 'include', headers: { 'x-crew-request': '1' } })
       if (!response.ok) throw new Error('export')
       download(await response.blob(), 'crew-support-journal.csv')
     } catch {

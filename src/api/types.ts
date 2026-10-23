@@ -4,6 +4,7 @@ export interface Me {
   subject: string
   displayName: string
   role: 'specialist' | 'lead' | 'system'
+  position: string | null
 }
 
 export interface BookingDto {

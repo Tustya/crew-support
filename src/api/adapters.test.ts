@@ -89,4 +89,12 @@ describe('api adapters', () => {
     expect(entry.action).toBe('Передано в почту')
     expect(entry.hotelName).toBe('Гостиница Ангел')
   })
+
+  it('shows a full name and a readable login failure', () => {
+    const dto: AuditDto = { id: 'a-2', occurred_at: '2026-10-23T07:32:00.000Z', action: 'auth.login', entity_type: 'session', result: 'denied', group_key: null, service_actor: null, display_name: 'Орлова Елена Павловна', safe_details: { reason: 'bad_credentials' } }
+    const entry = toJournalEntry(dto, [])
+    expect(entry.actor).toBe('Орлова Елена Павловна')
+    expect(entry.action).toBe('Вход')
+    expect(entry.description).toBe('причина неверная почта или пароль')
+  })
 })

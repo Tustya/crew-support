@@ -1,12 +1,7 @@
-const SUBJECT_KEY = 'crew-support-subject'
+let onUnauthenticated: (() => void) | null = null
 
-export function currentSubject(): string | null {
-  return sessionStorage.getItem(SUBJECT_KEY)
-}
-
-export function setSubject(subject: string | null): void {
-  if (subject) sessionStorage.setItem(SUBJECT_KEY, subject)
-  else sessionStorage.removeItem(SUBJECT_KEY)
+export function setUnauthenticatedHandler(handler: () => void): void {
+  onUnauthenticated = handler
 }
 
 export class ApiError extends Error {
@@ -22,8 +17,7 @@ export class ApiError extends Error {
 
 export async function api<T>(path: string, options: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
   const headers = new Headers(options.headers)
-  const subject = currentSubject()
-  if (subject) headers.set('x-dev-subject', subject)
+  headers.set('x-crew-request', '1')
   let body: BodyInit | undefined
   if (options.body instanceof ArrayBuffer) {
     headers.set('content-type', 'application/octet-stream')
@@ -32,10 +26,13 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     headers.set('content-type', 'application/json')
     body = JSON.stringify(options.body)
   }
-  const response = await fetch(path, { method: options.method ?? 'GET', headers, body })
+  const response = await fetch(path, { method: options.method ?? 'GET', headers, body, credentials: 'include' })
   if (response.status === 204) return undefined as T
   const text = await response.text()
   const payload = text ? (JSON.parse(text) as { error?: { code?: string; message?: string } }) : {}
-  if (!response.ok) throw new ApiError(response.status, payload.error?.code ?? 'INTERNAL', payload.error?.message ?? 'Ошибка запроса')
+  if (!response.ok) {
+    if (response.status === 401 && path !== '/api/v1/session') onUnauthenticated?.()
+    throw new ApiError(response.status, payload.error?.code ?? 'INTERNAL', payload.error?.message ?? 'Ошибка запроса')
+  }
   return payload as T
 }

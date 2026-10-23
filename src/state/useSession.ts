@@ -5,7 +5,7 @@ export interface Session {
   me: Me | null
   ready: boolean
   error: string | null
-  choose: (subject: string) => void
+  signIn: (email: string, password: string) => Promise<void>
   leave: () => void
 }
 

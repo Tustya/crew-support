@@ -1,16 +1,21 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { api, ApiError, currentSubject, setSubject } from '../api/client'
+import { api, ApiError, setUnauthenticatedHandler } from '../api/client'
 import type { Me } from '../api/types'
 import { SessionContext, type Session } from './useSession'
 import { useWorkplace } from './workplace'
 
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const [subject, setCurrent] = useState(currentSubject)
   const [me, setMe] = useState<Me | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [loadedSubject, setLoadedSubject] = useState<string | null>(null)
+  const [ready, setReady] = useState(false)
   useEffect(() => {
-    if (!subject) return
+    setUnauthenticatedHandler(() => {
+      setMe(null)
+      setError(null)
+      useWorkplace.getState().clear()
+    })
+  }, [])
+  useEffect(() => {
     let active = true
     api<Me>('/api/v1/me')
       .then((profile) => {
@@ -21,30 +26,35 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       })
       .catch((reason: unknown) => {
         if (!active) return
-        setSubject(null)
-        setCurrent(null)
         setMe(null)
-        setError(reason instanceof ApiError ? reason.message : 'Нет связи с сервером')
+        setError(reason instanceof ApiError && reason.status === 401 ? null : reason instanceof ApiError ? reason.message : 'Нет связи с сервером')
       })
       .finally(() => {
-        if (active) setLoadedSubject(subject)
+        if (active) setReady(true)
       })
     return () => {
       active = false
     }
-  }, [subject])
+  }, [])
   const value: Session = {
-    me: subject ? me : null,
-    ready: !subject || loadedSubject === subject,
+    me,
+    ready,
     error,
-    choose: (next) => {
-      setSubject(next)
-      setCurrent(next)
+    signIn: async (email, password) => {
+      try {
+        const profile = await api<Me>('/api/v1/session', { method: 'POST', body: { email, password } })
+        setMe(profile)
+        setError(null)
+        await useWorkplace.getState().refresh()
+      } catch (reason: unknown) {
+        setMe(null)
+        setError(reason instanceof ApiError ? reason.message : 'Нет связи с сервером')
+      }
     },
     leave: () => {
-      setSubject(null)
-      setCurrent(null)
+      void api('/api/v1/session/logout', { method: 'POST' }).catch(() => undefined)
       setMe(null)
+      setError(null)
       useWorkplace.getState().clear()
     },
   }

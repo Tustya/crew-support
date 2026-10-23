@@ -1,0 +1,9 @@
+# Устройство
+
+Один процесс Node.js. Состояние в PostgreSQL. Миграции — SQL-файлы с контрольной суммой. Планировщик в том же процессе, задания в таблице `jobs`.
+
+Роль и права читаются только из `app_users`. Заголовки `X-Role` и `X-Dev-Subject` права не назначают. `X-Dev-Subject` действует лишь при `AUTH_MODE=mock` вне production. Рабочий вход — `AUTH_MODE=password`: scrypt-хеш, сессия в HttpOnly cookie, мутации требуют `X-Crew-Request`.
+
+Интерфейс ходит в `/api/v1` и показывает то, что вернул `GET /api/v1/me`. Журнал берёт имя из `app_users.display_name`.
+
+В production не стартуют mock-вход, sample-источник, scripted-почта и пароль базы `crew:crew`.

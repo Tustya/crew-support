@@ -11,6 +11,7 @@ export interface Actor {
   externalSubject: string
   displayName: string
   role: 'specialist' | 'lead' | 'system'
+  positionTitle?: string | null
 }
 
 export interface SettingsRow {

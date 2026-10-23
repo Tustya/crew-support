@@ -46,6 +46,8 @@ const ACTION_LABEL: Record<string, string> = {
   'settings.updated': 'Настройки изменены',
   'template.published': 'Шаблон опубликован',
   'integration.test': 'Проверка подключения',
+  'auth.login': 'Вход',
+  'auth.logout': 'Выход',
 }
 
 const DETAIL_LABEL: Record<string, string> = {
@@ -60,6 +62,11 @@ const DETAIL_LABEL: Record<string, string> = {
 }
 
 const RECORD_STATUS: Record<string, string> = { active: 'активна', cancelled: 'отмена' }
+
+const REASON_LABEL: Record<string, string> = {
+  bad_credentials: 'неверная почта или пароль',
+  rate_limited: 'слишком много попыток',
+}
 
 export function utcOffsetOf(timezone: string): string {
   try {
@@ -189,9 +196,14 @@ export function toNotice(dto: NotificationDto, hotels: Hotel[]): Notice {
 
 function detailsText(details: Record<string, unknown>): string {
   return Object.entries(details)
-    .filter(([key, value]) => key in DETAIL_LABEL && (typeof value === 'string' || typeof value === 'number'))
-    .map(([key, value]) => `${DETAIL_LABEL[key]} ${String(value)}`)
+    .filter((entry): entry is [string, string | number] => entry[0] in DETAIL_LABEL && (typeof entry[1] === 'string' || typeof entry[1] === 'number'))
+    .map(([key, value]) => `${DETAIL_LABEL[key]} ${detailValue(key, value)}`)
     .join(', ')
+}
+
+function detailValue(key: string, value: string | number): string {
+  if (key !== 'reason' || typeof value !== 'string') return String(value)
+  return REASON_LABEL[value] ?? value
 }
 
 export function toJournalEntry(dto: AuditDto, hotels: Hotel[]): JournalEntry {

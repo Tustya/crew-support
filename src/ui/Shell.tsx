@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { sourceProblemText } from '../domain/labels'
 import { formatMsk } from '../domain/time'
@@ -14,39 +14,47 @@ const LINKS = [
   { to: '/settings', label: 'Настройки', icon: '⚙' },
 ]
 
-const ACCOUNTS = [
-  { subject: 'dev-specialist', label: 'Специалист смены' },
-  { subject: 'dev-lead', label: 'Старший смены' },
-]
-
 const REFRESH_MS = 60_000
 const TICK_MS = 30_000
 
 export function Shell() {
   const session = useSession()
   if (!session.ready) return <p className="p-6 text-sm text-ink-soft">Загрузка…</p>
-  if (!session.me) return <SignIn error={session.error} onChoose={session.choose} />
-  return <Workspace displayName={session.me.displayName} onLeave={session.leave} />
+  if (!session.me) return <SignIn error={session.error} onSignIn={session.signIn} />
+  return <Workspace displayName={session.me.displayName} position={session.me.position} onLeave={session.leave} />
 }
 
-function SignIn({ error, onChoose }: { error: string | null; onChoose: (subject: string) => void }) {
+function SignIn({ error, onSignIn }: { error: string | null; onSignIn: (email: string, password: string) => Promise<void> }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [pending, setPending] = useState(false)
   return (
     <main className="flex min-h-full items-center justify-center bg-canvas px-4 text-ink">
-      <section className={`${cardClass} flex w-full max-w-sm flex-col gap-3`}>
+      <form
+        className={`${cardClass} flex w-full max-w-sm flex-col gap-3`}
+        onSubmit={(event) => {
+          event.preventDefault()
+          setPending(true)
+          void onSignIn(email, password).finally(() => setPending(false))
+        }}
+      >
         <h1 className="text-[28px] font-bold leading-9">Crew Support</h1>
-        <p className="text-ink-soft">Гостиницы экипажей</p>
-        {error ? <p className="text-sm text-danger">{error}</p> : null}
-        {ACCOUNTS.map((account) => (
-          <Button key={account.subject} onClick={() => onChoose(account.subject)}>
-            {account.label}
-          </Button>
-        ))}
-      </section>
+        <label className="flex flex-col gap-1 text-sm font-semibold">
+          Почта
+          <input className="h-11 rounded-xl bg-muted px-3 font-normal" type="email" name="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} />
+        </label>
+        <label className="flex flex-col gap-1 text-sm font-semibold">
+          Пароль
+          <input className="h-11 rounded-xl bg-muted px-3 font-normal" type="password" name="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} />
+        </label>
+        {error ? <p className="text-sm text-danger" role="alert">{error}</p> : null}
+        <Button type="submit" disabled={pending}>Войти</Button>
+      </form>
     </main>
   )
 }
 
-function Workspace({ displayName, onLeave }: { displayName: string; onLeave: () => void }) {
+function Workspace({ displayName, position, onLeave }: { displayName: string; position: string | null; onLeave: () => void }) {
   const source = useWorkplace((state) => state.source)
   const integrations = useWorkplace((state) => state.integrations)
   const groups = useWorkplace((state) => state.groups)
@@ -78,7 +86,11 @@ function Workspace({ displayName, onLeave }: { displayName: string; onLeave: () 
           <Badge tone={sourceTone}>Aviabit · {sourceLabel}</Badge>
           <span className="hidden lg:inline">Почта · {mailInApp ? 'отправка в интерфейсе' : 'передача в клиент'}</span>
           <span className="hidden tabular-nums xl:inline">{source?.lastSuccessAt ? formatMsk(source.lastSuccessAt) : 'снимка нет'}</span>
-          <span className="font-semibold text-ink">{displayName}</span>
+          <span className="text-right">
+            <span className="block font-semibold text-ink">{displayName}</span>
+            {position ? <span className="block">{position}</span> : null}
+          </span>
+          <button type="button" className="min-h-11 font-semibold text-brand-strong md:hidden" onClick={onLeave}>Выйти</button>
         </div>
       </header>
       <div className="shell-body pt-16">
@@ -100,6 +112,7 @@ function Workspace({ displayName, onLeave }: { displayName: string; onLeave: () 
           </nav>
           <div className="border-t border-line p-3 text-xs">
             <p className="hidden font-semibold min-[1366px]:block">{displayName}</p>
+            {position ? <p className="hidden text-ink-soft min-[1366px]:block">{position}</p> : null}
             <button type="button" className="mt-2 min-h-11 font-semibold text-brand-strong" onClick={onLeave}>
               Выйти
             </button>

@@ -387,11 +387,11 @@ async function dispatch(
     return send(res, 200, result, correlationId)
   }
   if (route === 'audit') {
-    const limit = Math.min(Number(url.searchParams.get('limit') ?? 25), 100)
+    const paging = pageParams(url)
     const rows = await client.query(
       `SELECT a.id, a.occurred_at, a.action, a.entity_type, a.result, a.group_key, a.service_actor, a.safe_details, u.display_name
-       FROM audit_events a LEFT JOIN app_users u ON u.id = a.actor_user_id ORDER BY a.occurred_at DESC, a.id DESC LIMIT $1`,
-      [Number.isFinite(limit) ? limit : 25],
+       FROM audit_events a LEFT JOIN app_users u ON u.id = a.actor_user_id ORDER BY a.occurred_at DESC, a.id DESC LIMIT $1 OFFSET $2`,
+      [paging.limit, paging.offset],
     )
     return send(res, 200, { items: rows.rows, nextCursor: null }, correlationId)
   }
@@ -650,11 +650,21 @@ async function loadPair(client: Parameters<Parameters<typeof withTransaction>[1]
 }
 
 function page<T>(items: T[], url: URL): { items: T[]; nextCursor: string | null } {
-  const limit = Math.min(Number(url.searchParams.get('limit') ?? 25), 100)
-  const offset = Number(url.searchParams.get('offset') ?? 0)
-  const start = Number.isFinite(offset) ? offset : 0
-  const slice = items.slice(start, start + (Number.isFinite(limit) ? limit : 25))
-  return { items: slice, nextCursor: start + slice.length < items.length ? String(start + slice.length) : null }
+  const { limit, offset } = pageParams(url)
+  const slice = items.slice(offset, offset + limit)
+  return { items: slice, nextCursor: offset + slice.length < items.length ? String(offset + slice.length) : null }
+}
+
+function pageParams(url: URL): { limit: number; offset: number } {
+  return { limit: pageInt(url.searchParams.get('limit'), 25, 1, 100), offset: pageInt(url.searchParams.get('offset'), 0, 0, 10_000) }
+}
+
+function pageInt(raw: string | null, fallback: number, min: number, max: number): number {
+  if (raw === null || raw.trim() === '') return fallback
+  if (!/^\d+$/.test(raw)) throw new HttpError(422, 'PAGE_INVALID', 'Некорректная страница')
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < min || value > max) throw new HttpError(422, 'PAGE_INVALID', 'Некорректная страница')
+  return value
 }
 
 function mailOutcome(req: IncomingMessage, config: AppConfig): 'accept' | 'reject' | 'timeout' {

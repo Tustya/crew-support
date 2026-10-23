@@ -309,6 +309,26 @@ test('a manual override must name a real booking field', async () => {
   assert.equal(viewed.body.reviewedAt, null)
 })
 
+test('page limits must be whole numbers inside the allowed range', async () => {
+  await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'base' } })
+  const open = await api('/api/v1/groups')
+  const blank = await api('/api/v1/groups?limit=&offset=')
+  assert.equal(blank.status, 200)
+  assert.equal((blank.body.items as unknown[]).length, (open.body.items as unknown[]).length)
+  assert.equal((await api('/api/v1/groups?limit=1')).body.items.length, 1)
+  const paths = ['/api/v1/groups', '/api/v1/audit/events']
+  for (const path of paths) {
+    for (const query of ['limit=-1', 'limit=abc', 'limit=1e100', 'offset=-1']) {
+      const rejected = await api(`${path}?${query}`)
+      assert.equal(rejected.status, 422)
+      assert.equal((rejected.body.error as { code: string }).code, 'PAGE_INVALID')
+    }
+  }
+  const audit = await api('/api/v1/audit/events?limit=&offset=')
+  assert.equal(audit.status, 200)
+  assert.ok(Array.isArray(audit.body.items))
+})
+
 test('an oversized sheet is rejected and does not create a snapshot', async () => {
   const before = await pool.query('SELECT count(*)::int AS count FROM snapshots')
   const uploaded = await fetch(`${server.url}/api/v1/imports`, {

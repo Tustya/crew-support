@@ -12,6 +12,11 @@ export function selectConfirmedPayload(archivedPayload: StoredPayload, latestPay
   return archivedPayload
 }
 
+function letterRoomType(value: string): 'SGL' | 'DBL' {
+  if (value === 'SGL' || value === 'DBL') return value
+  throw new Error('ROOM_TYPE_INVALID')
+}
+
 function isoFromDisplayDate(value: string): string {
   const matched = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(value)
   if (!matched) return value
@@ -35,7 +40,7 @@ export function baselineBookingsFromPayload(payload: StoredPayload): CanonicalBo
       departureFlight: row.departureFlight,
       departureLocalDate: isoFromDisplayDate(row.departureDate),
       departureLocalTime: row.departureTime,
-      roomType: row.roomType === 'DBL' ? 'DBL' : 'SGL',
+      roomType: letterRoomType(row.roomType),
       recordStatus: 'active',
     })
   }

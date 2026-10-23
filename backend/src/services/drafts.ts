@@ -1,8 +1,7 @@
 import type { PoolClient } from 'pg'
-import { applyOverrides, applyTokens, letterRows, pickTemplateKey, renderLetter, type LetterPayload, type PublicLetterRow } from '../domain/letter.ts'
+import { applyOverrides, applyTokens, hasMarkup, letterRows, overrideProblems, pickTemplateKey, renderLetter, type LetterPayload, type PublicLetterRow } from '../domain/letter.ts'
 import { sha256, stableStringify } from '../domain/hash.ts'
 import { blockText, type MailTemplate, type TemplateBlock } from '../domain/templates.ts'
-import { hasMarkup } from '../domain/letter.ts'
 import { HttpError } from '../errors.ts'
 import { writeAudit } from './audit.ts'
 import { groupById, loadState, sourceProblem, type Actor } from './state.ts'
@@ -201,6 +200,7 @@ export async function patchDraft(
   const current = await currentVersion(client, draft.id, draft.current_revision)
   const letter = current.payload.letter
   if (!letter) throw new HttpError(409, 'DRAFT_EMPTY', 'У версии нет текста')
+  if (overrideProblems(letter.rows, input.overrides).length > 0) throw new HttpError(422, 'OVERRIDE_INVALID', 'Ручная правка некорректна')
   const rows = applyOverrides(letter.rows, input.overrides)
   const nextLetter: LetterPayload = {
     ...letter,

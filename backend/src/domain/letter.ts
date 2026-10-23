@@ -189,6 +189,56 @@ function mark(value: string, changed: boolean): string {
   return changed ? `*${value}*` : value
 }
 
+const OVERRIDE_FIELDS = new Set(['fullName', 'arrivalFlight', 'arrivalDate', 'arrivalTime', 'departureFlight', 'departureDate', 'departureTime', 'roomType'])
+
+export function overrideProblems(
+  rows: readonly { bookingId: string }[],
+  overrides: readonly { bookingId: string; field: string; value: string; reason: string }[],
+): string[] {
+  const problems: string[] = []
+  if (overrides.length > 50) problems.push('too_many')
+  const bookingIds = new Set(rows.map((row) => row.bookingId))
+  const seen = new Set<string>()
+  for (const item of overrides) {
+    const pair = `${item.bookingId}\n${item.field}`
+    if (seen.has(pair)) problems.push('duplicate')
+    seen.add(pair)
+    if (!OVERRIDE_FIELDS.has(item.field)) {
+      problems.push('field')
+      continue
+    }
+    if (!bookingIds.has(item.bookingId)) problems.push('booking')
+    if (item.reason.trim().length < 3 || item.reason.length > 500) problems.push('reason')
+    if (!overrideValueFits(item.field, item.value)) problems.push('value')
+  }
+  return problems
+}
+
+function overrideValueFits(field: string, value: string): boolean {
+  if (field === 'fullName') return value.trim().length >= 1 && value.length <= 250
+  if (field === 'roomType') return value === 'SGL' || value === 'DBL'
+  if (field === 'arrivalDate' || field === 'departureDate') return isCalendarDate(value)
+  if (field === 'arrivalTime' || field === 'departureTime') return isClockTime(value)
+  if (field === 'arrivalFlight' || field === 'departureFlight') return /^[A-Z0-9-]{1,10}$/i.test(value)
+  return false
+}
+
+function isCalendarDate(value: string): boolean {
+  const matched = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(value)
+  if (!matched) return false
+  const day = Number(matched[1])
+  const month = Number(matched[2])
+  const year = Number(matched[3])
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+}
+
+function isClockTime(value: string): boolean {
+  const matched = /^(\d{2}):(\d{2})$/.exec(value)
+  if (!matched) return false
+  return Number(matched[1]) <= 23 && Number(matched[2]) <= 59
+}
+
 export function applyOverrides(
   rows: readonly PublicLetterRow[],
   overrides: readonly { bookingId: string; field: string; value: string }[],

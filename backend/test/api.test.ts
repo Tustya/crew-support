@@ -264,6 +264,51 @@ test('a baseline accepts only the latest full snapshot for that group', async ()
   assert.equal(stored.rows[0].count, 0)
 })
 
+test('a manual override must name a real booking field', async () => {
+  const checked = await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'base' } })
+  const angel = await angelGroup()
+  await api('/api/v1/baselines', { method: 'POST', body: { groupId: angel.id, snapshotId: checked.body.snapshotId, evidence: 'База для правки', confirmed: true } })
+  await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'delayed' } })
+  const prepared = await api(`/api/v1/groups/${angel.id}/prepare`, { method: 'POST', body: { bypassQuiet: true, reason: 'Проверка правки' } })
+  const draft = await api(`/api/v1/drafts/${prepared.body.draftId}`)
+  const revision = draft.body.revision
+  const row = (draft.body.rows as Array<{ bookingId: string; arrivalTime: string }>)[0]
+  assert.ok(row)
+  const patch = (overrides: unknown) =>
+    api(`/api/v1/drafts/${prepared.body.draftId}`, {
+      method: 'PATCH',
+      body: { expectedRevision: revision, subject: 'Корректировка', intro: 'Текст', closing: 'Конец', signature: 'Crew Support', recipients: ['hotel-angel@example.com'], cc: [], overrides },
+    })
+  const cases = [
+    [{ bookingId: row.bookingId, field: 'roomType', value: 'INVALID', reason: 'Чужой тип' }],
+    [{ bookingId: 'missing-booking', field: 'fullName', value: 'Иванов И.И.', reason: 'Нет такой строки' }],
+    [{ bookingId: row.bookingId, field: 'gender', value: 'M', reason: 'Чужое поле' }],
+    [{ bookingId: row.bookingId, field: 'arrivalDate', value: '31.02.2026', reason: 'Нет такой даты' }],
+    [{ bookingId: row.bookingId, field: 'arrivalTime', value: '25:00', reason: 'Нет такого часа' }],
+    [
+      { bookingId: row.bookingId, field: 'arrivalTime', value: '13:10', reason: 'Первая правка' },
+      { bookingId: row.bookingId, field: 'arrivalTime', value: '14:10', reason: 'Вторая правка' },
+    ],
+    Array.from({ length: 51 }, () => ({ bookingId: row.bookingId, field: 'arrivalTime', value: '13:10', reason: 'Лишняя правка' })),
+    [{ bookingId: row.bookingId, field: 'fullName', value: 12, reason: 'Не строка' }],
+  ]
+  for (const overrides of cases) {
+    const rejected = await patch(overrides)
+    assert.equal(rejected.status, 422)
+    const stored = await api(`/api/v1/drafts/${prepared.body.draftId}`)
+    assert.equal(stored.body.revision, revision)
+  }
+  const reviewed = await api(`/api/v1/drafts/${prepared.body.draftId}/review`, { method: 'POST', body: { revision, fingerprint: draft.body.fingerprint, confirmed: true } })
+  assert.equal(reviewed.status, 200)
+  const nextTime = row.arrivalTime === '13:10' ? '14:10' : '13:10'
+  const saved = await patch([{ bookingId: row.bookingId, field: 'arrivalTime', value: nextTime, reason: 'Уточнение у экипажа' }])
+  assert.equal(saved.status, 200)
+  assert.notEqual(saved.body.fingerprint, draft.body.fingerprint)
+  assert.equal(saved.body.status, 'active')
+  const viewed = await api(`/api/v1/drafts/${prepared.body.draftId}`)
+  assert.equal(viewed.body.reviewedAt, null)
+})
+
 test('an oversized sheet is rejected and does not create a snapshot', async () => {
   const before = await pool.query('SELECT count(*)::int AS count FROM snapshots')
   const uploaded = await fetch(`${server.url}/api/v1/imports`, {

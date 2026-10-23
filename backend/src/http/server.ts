@@ -310,7 +310,7 @@ async function dispatch(
       signature: requiredString(body.signature),
       recipients: stringList(body.recipients),
       cc: stringList(body.cc ?? []),
-      overrides: Array.isArray(body.overrides) ? body.overrides as Array<{ bookingId: string; field: string; value: string; reason: string }> : [],
+      overrides: overrideList(body.overrides),
     })
     return send(res, 200, { id: params.id, ...result, reviewedAt: null }, correlationId)
   }
@@ -750,6 +750,23 @@ function requiredString(value: unknown): string {
 function requiredNumber(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) throw new HttpError(422, 'FIELD_INVALID', 'Ожидается число')
   return value
+}
+
+function overrideList(value: unknown): Array<{ bookingId: string; field: string; value: string; reason: string }> {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 50) throw new HttpError(422, 'OVERRIDE_INVALID', 'Список правок некорректен')
+  return value.map((item) => {
+    if (!item || typeof item !== 'object') throw new HttpError(422, 'OVERRIDE_INVALID', 'Правка некорректна')
+    const record = item as Record<string, unknown>
+    const bookingId = record.bookingId
+    const field = record.field
+    const overrideValue = record.value
+    const reason = record.reason
+    if (typeof bookingId !== 'string' || typeof field !== 'string' || typeof overrideValue !== 'string' || typeof reason !== 'string') {
+      throw new HttpError(422, 'OVERRIDE_INVALID', 'Правка некорректна')
+    }
+    return { bookingId, field, value: overrideValue, reason }
+  })
 }
 
 function stringList(value: unknown): string[] {

@@ -6,7 +6,7 @@ import { diffBookings, type CanonicalBooking } from '../src/domain/diff.ts'
 import { indexHotels, resolveHotelMapping } from '../src/domain/hotels.ts'
 import { matchByIdentity } from '../src/domain/identity.ts'
 import { letterRows } from '../src/domain/letter.ts'
-import { selectConfirmedPayload, type StoredPayload } from '../src/domain/payload.ts'
+import { baselineBookingsFromPayload, selectConfirmedPayload, type StoredPayload } from '../src/domain/payload.ts'
 import { assignRooms } from '../src/domain/rooms.ts'
 import { templateProblems, defaultTemplate } from '../src/domain/templates.ts'
 import { nextQuietTimer } from '../src/domain/timer.ts'
@@ -94,6 +94,43 @@ test('doubles pair inside one gender and the letter does not publish gender', ()
   assert.equal(rows.length, 2)
   assert.equal(rows.every((row) => !('gender' in row)), true)
   assert.equal(JSON.stringify(rows).includes('<'), false)
+})
+
+test('a letter room type outside SGL and DBL is rejected', () => {
+  const source = booking({ id: 'a', fullName: 'Иванов И.И.' })
+  const payload: StoredPayload = {
+    bookings: [source],
+    roomPairs: [],
+    letter: {
+      subject: 'Тема',
+      greeting: 'Здравствуйте',
+      intro: 'Текст',
+      closing: 'Конец',
+      signature: 'Crew Support',
+      columns: [],
+      newLabel: 'Новая',
+      cancelLabel: 'Отмена',
+      templateKey: 'adjustment',
+      manualEdits: true,
+      rows: [{
+        bookingId: 'a',
+        fullName: source.fullName,
+        arrivalFlight: source.arrivalFlight,
+        arrivalDate: '09.10.2026',
+        arrivalTime: source.arrivalLocalTime,
+        departureFlight: source.departureFlight,
+        departureDate: '09.10.2026',
+        departureTime: source.departureLocalTime,
+        roomType: 'TWIN',
+        roomKey: '1',
+        roomLabel: 'Твин',
+        badge: null,
+        changedFields: [],
+        manualFields: ['roomType'],
+      }],
+    },
+  }
+  assert.throws(() => baselineBookingsFromPayload(payload), /ROOM_TYPE_INVALID/)
 })
 
 test('confirmed baseline is the archived letter, not the latest snapshot', () => {

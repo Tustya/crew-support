@@ -4,6 +4,7 @@ import { isValidTimeZone } from '../domain/time.ts'
 import { templateProblems, type MailTemplate, type TemplateBlock } from '../domain/templates.ts'
 import { HttpError } from '../errors.ts'
 import { writeAudit } from './audit.ts'
+import { rebuildQueueViews } from './queueView.ts'
 import type { Actor } from './state.ts'
 
 const EMAIL = /^[a-z0-9._+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i
@@ -46,6 +47,7 @@ export async function patchHotel(
     [hotelId, hotel.sourceHotelId, hotel.name, hotel.city, hotel.airportCode, hotel.timezone, JSON.stringify(hotel.recipients), JSON.stringify(hotel.cc), hotel.contractStatus, hotel.active, hotel.comment, now.toISOString()],
   )
   await writeAudit(client, audit(actor, now, correlationId, 'hotel.updated', hotelId, { airport: hotel.airportCode }))
+  await rebuildQueueViews(client, now)
   return { id: hotelId, version: Number(updated.rows[0]?.row_version ?? expectedVersion + 1), ...publicHotel(hotel) }
 }
 
@@ -125,6 +127,7 @@ export async function patchSettings(
     )
   }
   await writeAudit(client, audit(actor, now, correlationId, 'settings.updated', '1', { quietMinutes }))
+  await rebuildQueueViews(client, now)
   return { version: Number(updated.rows[0]?.row_version), pollMinutes, quietMinutes, autoCheck: booleanField(body.autoCheck, row.auto_check), autoPrepare: booleanField(body.autoPrepare, row.auto_prepare), stayScope, staleAfterMinutes, senderName, templateVersion: row.template_version, requireHumanReview: true }
 }
 
@@ -154,6 +157,7 @@ export async function publishTemplate(
   )
   await client.query('UPDATE app_settings SET template_version = template_version + 1, row_version = row_version + 1, updated_at = $1 WHERE id = 1', [now.toISOString()])
   await writeAudit(client, audit(actor, now, correlationId, 'template.published', templateKey, { version }))
+  await rebuildQueueViews(client, now)
   return { version }
 }
 
@@ -162,6 +166,7 @@ export async function holdException(client: PoolClient, actor: Actor, now: Date,
   const result = await client.query(`UPDATE exceptions SET status = 'held', resolution = $2, updated_at = $3 WHERE id = $1 AND status <> 'resolved'`, [exceptionId, comment.trim().slice(0, 500), now.toISOString()])
   if (result.rowCount === 0) throw new HttpError(404, 'EXCEPTION_NOT_FOUND', 'Исключение не найдено')
   await writeAudit(client, audit(actor, now, correlationId, 'exception.held', exceptionId, {}))
+  await rebuildQueueViews(client, now)
 }
 
 export async function resolveException(
@@ -188,6 +193,7 @@ export async function resolveException(
     now.toISOString(),
   ])
   await writeAudit(client, audit(actor, now, correlationId, 'exception.resolved', exceptionId, {}))
+  await rebuildQueueViews(client, now)
 }
 
 export async function recordRejectedImport(

@@ -7,6 +7,7 @@ import { nextQuietTimer } from '../domain/timer.ts'
 import { HttpError } from '../errors.ts'
 import { sampleFixture, type SampleBookingInput } from '../fixtures/sample.ts'
 import { writeAudit } from './audit.ts'
+import { rebuildQueueViews } from './queueView.ts'
 import { bookingGroupKey, type Actor } from './state.ts'
 import { baselineBookingsFromPayload, type StoredPayload } from '../domain/payload.ts'
 
@@ -67,9 +68,9 @@ export async function runSampleCheck(
   const seq = Number(previous?.seq ?? 0) + 1
   const blocked = resolved.issues.length > 0 || fixture.completeness !== 'full'
   const snapshot = await client.query<{ id: string }>(
-    `INSERT INTO snapshots (source_run_id, source, series_id, seq, window_from, window_to, fetched_at, hash, validation_status, completeness, validation_issues)
-     VALUES ($1, 'sample', $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb) RETURNING id`,
-    [runId, SERIES_ID, seq, fixture.windowFrom, fixture.windowTo, nowIso, hash, blocked ? 'blocked' : 'accepted', fixture.completeness, JSON.stringify(resolved.issues.slice(0, 50))],
+    `INSERT INTO snapshots (source_run_id, source, series_id, seq, window_from, window_to, fetched_at, hash, validation_status, completeness, validation_issues, row_count)
+     VALUES ($1, 'sample', $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11) RETURNING id`,
+    [runId, SERIES_ID, seq, fixture.windowFrom, fixture.windowTo, nowIso, hash, blocked ? 'blocked' : 'accepted', fixture.completeness, JSON.stringify(resolved.issues.slice(0, 50)), resolved.bookings.length],
   )
   const snapshotId = snapshot.rows[0]?.id ?? ''
   await insertBookings(client, snapshotId, resolved.bookings, resolved.raw)
@@ -85,6 +86,7 @@ export async function runSampleCheck(
   await insertMappingExceptions(client, resolved.issues, snapshotId)
   await finishRun(client, runId, jobId, 'succeeded', blocked ? 'SNAPSHOT_BLOCKED' : null, hash, nowIso)
   await writeAudit(client, audit(input, 'source.check_succeeded', snapshotId, 'ok', { fixture: fixture.name, blocked }))
+  await rebuildQueueViews(client, input.now)
   return { jobId, runId, snapshotId, duplicate: false, status: 'succeeded', errorCode: blocked ? 'SNAPSHOT_BLOCKED' : null }
 }
 
@@ -130,9 +132,9 @@ export async function runImportedRows(
   const seq = Number(previous?.seq ?? 0) + 1
   const blocked = resolved.issues.length > 0
   const snapshot = await client.query<{ id: string }>(
-    `INSERT INTO snapshots (source_run_id, source, series_id, seq, window_from, window_to, fetched_at, hash, validation_status, completeness, validation_issues)
-     VALUES ($1, 'workbook', 'workbook', $2, $3, $4, $5, $6, $7, 'full', $8::jsonb) RETURNING id`,
-    [runId, seq, windowFrom, windowTo, nowIso, hash, blocked ? 'blocked' : 'accepted', JSON.stringify(resolved.issues.slice(0, 50))],
+    `INSERT INTO snapshots (source_run_id, source, series_id, seq, window_from, window_to, fetched_at, hash, validation_status, completeness, validation_issues, row_count)
+     VALUES ($1, 'workbook', 'workbook', $2, $3, $4, $5, $6, $7, 'full', $8::jsonb, $9) RETURNING id`,
+    [runId, seq, windowFrom, windowTo, nowIso, hash, blocked ? 'blocked' : 'accepted', JSON.stringify(resolved.issues.slice(0, 50)), resolved.bookings.length],
   )
   const snapshotId = snapshot.rows[0]?.id ?? ''
   await insertBookings(client, snapshotId, resolved.bookings, resolved.raw)
@@ -148,6 +150,7 @@ export async function runImportedRows(
   await insertMappingExceptions(client, resolved.issues, snapshotId)
   await finishRun(client, runId, jobId, 'succeeded', blocked ? 'SNAPSHOT_BLOCKED' : null, hash, nowIso)
   await writeAudit(client, audit(input, 'source.import_succeeded', snapshotId, 'ok', { filename: input.filename, blocked }))
+  await rebuildQueueViews(client, input.now)
   return { jobId, runId, snapshotId, duplicate: false, status: 'succeeded', errorCode: blocked ? 'SNAPSHOT_BLOCKED' : null }
 }
 
@@ -263,40 +266,54 @@ function dedupeIssues(issues: Array<{ code: string; groupKey: string | null }>):
   return unique
 }
 
-async function insertBookings(client: PoolClient, snapshotId: string, bookings: readonly CanonicalBooking[], raw: readonly SampleBookingInput[]): Promise<void> {
-  for (let index = 0; index < bookings.length; index += 1) {
-    const booking = bookings[index]
-    const source = raw[index]
-    if (!booking || !source) continue
+const WRITE_CHUNK = 400
+
+export async function insertBookings(client: PoolClient, snapshotId: string, bookings: readonly CanonicalBooking[], raw: readonly SampleBookingInput[]): Promise<void> {
+  for (let offset = 0; offset < bookings.length; offset += WRITE_CHUNK) {
+    const slice = bookings.slice(offset, offset + WRITE_CHUNK)
+    const paired = slice.flatMap((booking, index) => {
+      const source = raw[offset + index]
+      return booking && source ? [{ booking, rowNo: offset + index + 1 }] : []
+    })
+    if (paired.length === 0) continue
     await client.query(
       `INSERT INTO snapshot_bookings (
         snapshot_id, source_booking_id, source_crew_id, sheet_name, source_row_no, source_row_hash, hotel_id, airport_code, stay_date,
         full_name, position, gender, arrival_local_date, arrival_local_time, departure_local_date, departure_local_time,
         arrival_flight, departure_flight, room_type, record_status, replacement_of, raw_sanitized
-      ) VALUES (
-        $1, $2, $3, 'synthetic', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, '{}'::jsonb
+      )
+      SELECT $1, source_booking_id, source_crew_id, 'synthetic', source_row_no, source_row_hash, hotel_id, airport_code, stay_date::date,
+             full_name, position, gender, NULLIF(arrival_local_date, '')::date, NULLIF(arrival_local_time, '')::time,
+             NULLIF(departure_local_date, '')::date, NULLIF(departure_local_time, '')::time, arrival_flight, departure_flight,
+             NULLIF(room_type, ''), record_status, NULLIF(replacement_of, ''), '{}'::jsonb
+      FROM unnest(
+        $2::text[], $3::text[], $4::int[], $5::text[], $6::uuid[], $7::text[], $8::text[], $9::text[], $10::text[], $11::text[],
+        $12::text[], $13::text[], $14::text[], $15::text[], $16::text[], $17::text[], $18::text[], $19::text[], $20::text[]
+      ) AS row(
+        source_booking_id, source_crew_id, source_row_no, source_row_hash, hotel_id, airport_code, stay_date, full_name, position, gender,
+        arrival_local_date, arrival_local_time, departure_local_date, departure_local_time, arrival_flight, departure_flight, room_type, record_status, replacement_of
       )`,
       [
         snapshotId,
-        booking.id,
-        booking.crewId,
-        index + 1,
-        sha256Hex(contentKeyOf(booking) + index),
-        booking.hotelId,
-        booking.airportCode,
-        booking.stayDate,
-        booking.fullName,
-        booking.position,
-        booking.gender,
-        booking.arrivalLocalDate || null,
-        booking.arrivalLocalTime || null,
-        booking.departureLocalDate || null,
-        booking.departureLocalTime || null,
-        booking.arrivalFlight,
-        booking.departureFlight,
-        booking.roomType,
-        booking.recordStatus,
-        booking.replacementOf,
+        paired.map((item) => item.booking.id),
+        paired.map((item) => item.booking.crewId),
+        paired.map((item) => item.rowNo),
+        paired.map((item) => sha256Hex(contentKeyOf(item.booking) + (item.rowNo - 1))),
+        paired.map((item) => item.booking.hotelId),
+        paired.map((item) => item.booking.airportCode),
+        paired.map((item) => item.booking.stayDate),
+        paired.map((item) => item.booking.fullName),
+        paired.map((item) => item.booking.position),
+        paired.map((item) => item.booking.gender),
+        paired.map((item) => item.booking.arrivalLocalDate),
+        paired.map((item) => item.booking.arrivalLocalTime),
+        paired.map((item) => item.booking.departureLocalDate),
+        paired.map((item) => item.booking.departureLocalTime),
+        paired.map((item) => item.booking.arrivalFlight),
+        paired.map((item) => item.booking.departureFlight),
+        paired.map((item) => item.booking.roomType),
+        paired.map((item) => item.booking.recordStatus),
+        paired.map((item) => item.booking.replacementOf),
       ],
     )
   }
@@ -350,12 +367,26 @@ async function loadBookings(client: PoolClient, snapshotId: string): Promise<Can
 }
 
 async function insertEvents(client: PoolClient, events: ReturnType<typeof diffBookings>['events'], fromId: string, toId: string, nowIso: string): Promise<void> {
-  for (const event of events) {
-    if (!event.groupKey) continue
+  const rows = events.filter((event) => event.groupKey)
+  for (let offset = 0; offset < rows.length; offset += WRITE_CHUNK) {
+    const slice = rows.slice(offset, offset + WRITE_CHUNK)
     await client.query(
       `INSERT INTO change_events (id, group_key, entity_key, kind, before_booking, after_booking, changed_fields, first_detected_at, from_snapshot_id, to_snapshot_id, link_key)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11)`,
-      [randomUUID(), event.groupKey, event.entityKey, event.kind, JSON.stringify(event.before), JSON.stringify(event.after), JSON.stringify(event.changedFields), nowIso, fromId, toId, event.linkKey],
+       SELECT id::uuid, group_key, entity_key, kind, before_booking::jsonb, after_booking::jsonb, changed_fields::jsonb, $2, $3, $4, link_key
+       FROM unnest($1::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::text[]) AS row(id, group_key, entity_key, kind, before_booking, after_booking, changed_fields, link_key)`,
+      [
+        slice.map(() => randomUUID()),
+        nowIso,
+        fromId,
+        toId,
+        slice.map((event) => event.groupKey),
+        slice.map((event) => event.entityKey),
+        slice.map((event) => event.kind),
+        slice.map((event) => JSON.stringify(event.before)),
+        slice.map((event) => JSON.stringify(event.after)),
+        slice.map((event) => JSON.stringify(event.changedFields)),
+        slice.map((event) => event.linkKey),
+      ],
     )
   }
 }
@@ -366,15 +397,16 @@ async function ensureGroups(client: PoolClient, bookings: readonly CanonicalBook
     const key = bookingGroupKey(booking)
     if (key) keys.add(key)
   }
-  for (const key of [...keys].sort()) {
-    const parsed = parseGroupKey(key)
-    await client.query(
-      `INSERT INTO work_groups (group_key, hotel_id, airport_code, stay_date, updated_at)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (group_key) DO NOTHING`,
-      [key, parsed.hotelId, parsed.airportCode, parsed.stayDate, nowIso],
-    )
-  }
+  const sorted = [...keys].sort()
+  if (sorted.length === 0) return
+  const parsed = sorted.map(parseGroupKey)
+  await client.query(
+    `INSERT INTO work_groups (group_key, hotel_id, airport_code, stay_date, updated_at)
+     SELECT group_key, hotel_id, airport_code, stay_date::date, $5
+     FROM unnest($1::text[], $2::uuid[], $3::text[], $4::text[]) AS row(group_key, hotel_id, airport_code, stay_date)
+     ON CONFLICT (group_key) DO NOTHING`,
+    [sorted, parsed.map((item) => item.hotelId), parsed.map((item) => item.airportCode), parsed.map((item) => item.stayDate), nowIso],
+  )
 }
 
 function parseGroupKey(groupKey: string): { hotelId: string | null; airportCode: string; stayDate: string } {
@@ -386,7 +418,7 @@ function parseGroupKey(groupKey: string): { hotelId: string | null; airportCode:
   return { hotelId: hotelId ?? null, airportCode: airportCode ?? 'XXX', stayDate: stayDate ?? '1970-01-01' }
 }
 
-async function applyTimers(client: PoolClient, bookings: readonly CanonicalBooking[], nowIso: string): Promise<void> {
+export async function applyTimers(client: PoolClient, bookings: readonly CanonicalBooking[], nowIso: string): Promise<void> {
   const settings = await client.query<{ quiet_minutes: number }>('SELECT quiet_minutes FROM app_settings WHERE id = 1')
   const quietMinutes = settings.rows[0]?.quiet_minutes ?? 60
   const baselines = await client.query<{ group_key: string; payload: StoredPayload }>(
@@ -406,22 +438,22 @@ async function applyTimers(client: PoolClient, bookings: readonly CanonicalBooki
   )
   const keys = new Set<string>([...grouped.keys(), ...baselineByKey.keys(), ...existing.rows.map((row) => row.group_key)])
   const currentByKey = new Map(existing.rows.map((row) => [row.group_key, row]))
+  const fingerprints: Array<{ key: string; fingerprint: string }> = []
+  const clears: Array<{ key: string; fingerprint: string }> = []
+  const timers: Array<{ key: string; quietStartedAt: string; lastChangeAt: string; dueAt: string; fingerprint: string }> = []
   for (const key of [...keys].sort()) {
     const latestGroup = grouped.get(key) ?? []
     const fingerprint = sha256(bookingsFingerprint(latestGroup))
     const current = currentByKey.get(key)
     const baseline = baselineByKey.get(key)
     if (!baseline) {
-      await client.query(`UPDATE work_groups SET last_fingerprint = $2, updated_at = $3 WHERE group_key = $1`, [key, fingerprint, nowIso])
+      fingerprints.push({ key, fingerprint })
       continue
     }
     const net = diffBookings({ before: baseline, after: latestGroup, completeness: 'full' })
     if (net.ambiguous || net.unresolvedAbsences.length > 0) continue
     if (net.events.length === 0) {
-      await client.query(
-        `UPDATE work_groups SET due_at = NULL, quiet_started_at = NULL, last_fingerprint = $2, updated_at = $3, row_version = row_version + 1 WHERE group_key = $1`,
-        [key, fingerprint, nowIso],
-      )
+      clears.push({ key, fingerprint })
       continue
     }
     if (current?.last_fingerprint === fingerprint) continue
@@ -430,9 +462,42 @@ async function applyTimers(client: PoolClient, bookings: readonly CanonicalBooki
       nowIso,
       quietMinutes,
     )
+    timers.push({ key, quietStartedAt: timer.quietStartedAt, lastChangeAt: timer.lastChangeAt, dueAt: timer.dueAt, fingerprint })
+  }
+  for (let offset = 0; offset < fingerprints.length; offset += WRITE_CHUNK) {
+    const slice = fingerprints.slice(offset, offset + WRITE_CHUNK)
     await client.query(
-      `UPDATE work_groups SET quiet_started_at = $2, last_change_at = $3, due_at = $4, last_fingerprint = $5, updated_at = $3, row_version = row_version + 1 WHERE group_key = $1`,
-      [key, timer.quietStartedAt, timer.lastChangeAt, timer.dueAt, fingerprint],
+      `UPDATE work_groups AS group_row SET last_fingerprint = row.fingerprint, updated_at = $3
+       FROM unnest($1::text[], $2::text[]) AS row(group_key, fingerprint)
+       WHERE group_row.group_key = row.group_key`,
+      [slice.map((item) => item.key), slice.map((item) => item.fingerprint), nowIso],
+    )
+  }
+  for (let offset = 0; offset < clears.length; offset += WRITE_CHUNK) {
+    const slice = clears.slice(offset, offset + WRITE_CHUNK)
+    await client.query(
+      `UPDATE work_groups AS group_row
+       SET due_at = NULL, quiet_started_at = NULL, last_fingerprint = row.fingerprint, updated_at = $3, row_version = group_row.row_version + 1
+       FROM unnest($1::text[], $2::text[]) AS row(group_key, fingerprint)
+       WHERE group_row.group_key = row.group_key`,
+      [slice.map((item) => item.key), slice.map((item) => item.fingerprint), nowIso],
+    )
+  }
+  for (let offset = 0; offset < timers.length; offset += WRITE_CHUNK) {
+    const slice = timers.slice(offset, offset + WRITE_CHUNK)
+    await client.query(
+      `UPDATE work_groups AS group_row
+       SET quiet_started_at = row.quiet_started_at::timestamptz, last_change_at = row.last_change_at::timestamptz, due_at = row.due_at::timestamptz,
+           last_fingerprint = row.fingerprint, updated_at = row.last_change_at::timestamptz, row_version = group_row.row_version + 1
+       FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[]) AS row(group_key, quiet_started_at, last_change_at, due_at, fingerprint)
+       WHERE group_row.group_key = row.group_key`,
+      [
+        slice.map((item) => item.key),
+        slice.map((item) => item.quietStartedAt),
+        slice.map((item) => item.lastChangeAt),
+        slice.map((item) => item.dueAt),
+        slice.map((item) => item.fingerprint),
+      ],
     )
   }
 }

@@ -25,15 +25,22 @@ export interface BookingDto {
   replacementOf: string | null
 }
 
+export interface CompareEvent {
+  entityKey: string
+  groupKey: string
+  kind: ChangeKind
+  before: { fullName: string } | null
+  after: { fullName: string } | null
+}
+
 export interface ChangeDto {
   entityKey: string
   groupKey: string
-  linkedGroupKey: string | null
-  linkKey: string | null
   kind: ChangeKind
-  before: BookingDto | null
-  after: BookingDto | null
-  changedFields: string[]
+  fullName: string
+  linkedGroupKey: string | null
+  replacement: boolean
+  fields: FieldDelta[]
 }
 
 export interface GroupDto {
@@ -51,8 +58,7 @@ export interface GroupDto {
   draftStatus: string | null
   revision: number | null
   exceptions: Array<{ id: string; kind: string; message: string; blocking: boolean }>
-  latestBookings: BookingDto[]
-  baselineBookings: BookingDto[] | null
+  crewNames: string[]
 }
 
 export interface SourceDto {
@@ -62,11 +68,17 @@ export interface SourceDto {
   lastErrorCode: string | null
   problem: string | null
   latestSnapshotId: string | null
+  latestSource?: string | null
+  windowFrom?: string | null
+  windowTo?: string | null
+  rowCount?: number
+  mailConfigured?: boolean
 }
 
 export interface OverviewDto {
   counts: Record<string, number>
   source: SourceDto
+  recentEvents: AuditDto[]
 }
 
 export interface DraftDto {
@@ -112,6 +124,7 @@ export interface NotificationDto {
   external_confirmation_at: string | null
   created_at: string
   revision: number
+  subject?: string | null
   letter: LetterDto | null
 }
 
@@ -244,6 +257,7 @@ export interface Notice {
   groupKey: string
   revision: number
   transport: NotificationDto['transport_status']
+  subject: string | null
   letter: LetterDto | null
   hotelName: string
   airportCode: string

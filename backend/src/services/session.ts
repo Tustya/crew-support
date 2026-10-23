@@ -11,7 +11,7 @@ import type { Actor } from './state.ts'
 export const SESSION_COOKIE = 'crew_session'
 const ABSOLUTE_SESSION_MS = 12 * 60 * 60 * 1000
 const IDLE_SESSION_MS = 30 * 60 * 1000
-const SLIDE_AFTER_MS = 60_000
+const SLIDE_AFTER_MS = 5 * 60 * 1000
 const ATTEMPT_WINDOW_MS = 15 * 60 * 1000
 const EMAIL_FAILURE_LIMIT = 5
 const IP_FAILURE_LIMIT = 30
@@ -167,7 +167,14 @@ export async function logoutSession(pool: Pool, config: AppConfig, token: string
   })
 }
 
-export async function actorFromSession(client: PoolClient, token: string, now: Date): Promise<Actor | null> {
+const slideMarkedAt = new Map<string, number>()
+let slideWrites = 0
+
+export function sessionSlideWrites(): number {
+  return slideWrites
+}
+
+export async function actorFromSession(client: Pool | PoolClient, token: string, now: Date): Promise<Actor | null> {
   const result = await client.query<SessionRow>(
     `SELECT u.id, u.external_subject, u.display_name, u.role, u.active, u.position_title,
             s.id AS session_id, s.expires_at, s.last_seen_at, s.revoked_at
@@ -182,10 +189,19 @@ export async function actorFromSession(client: PoolClient, token: string, now: D
   const lastSeenAt = new Date(row.last_seen_at).getTime()
   if (!Number.isFinite(expiresAt) || !Number.isFinite(lastSeenAt)) return null
   if (expiresAt <= now.getTime() || now.getTime() - lastSeenAt >= IDLE_SESSION_MS) return null
-  if (now.getTime() - lastSeenAt >= SLIDE_AFTER_MS) {
-    await client.query('UPDATE auth_sessions SET last_seen_at = $2 WHERE id = $1 AND revoked_at IS NULL', [row.session_id, now.toISOString()])
-  }
+  if (now.getTime() - lastSeenAt >= SLIDE_AFTER_MS) await noteSessionSeen(client, row.session_id, now)
   return toActor(row)
+}
+
+async function noteSessionSeen(client: Pool | PoolClient, sessionId: string, now: Date): Promise<void> {
+  const markedAt = slideMarkedAt.get(sessionId) ?? 0
+  if (now.getTime() - markedAt < SLIDE_AFTER_MS) return
+  slideMarkedAt.set(sessionId, now.getTime())
+  slideWrites += 1
+  await client.query(
+    `UPDATE auth_sessions SET last_seen_at = $2 WHERE id = $1 AND revoked_at IS NULL AND last_seen_at < $2::timestamptz - interval '5 minutes'`,
+    [sessionId, now.toISOString()],
+  )
 }
 
 function toActor(row: { id: string; external_subject: string; display_name: string; role: Actor['role']; position_title: string | null }): Actor {

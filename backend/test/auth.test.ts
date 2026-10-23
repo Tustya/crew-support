@@ -5,6 +5,8 @@ import { createPool } from '../src/db/pool.ts'
 import { migrate } from '../src/db/migrate.ts'
 import { resetBusinessData } from '../src/db/reference.ts'
 import { hashPassword, verifyPassword } from '../src/domain/password.ts'
+import { transactionDepth } from '../src/db/pool.ts'
+import { sessionSlideWrites } from '../src/services/session.ts'
 import { clearRateLimits, startServer, type RunningServer } from '../src/http/server.ts'
 
 const databaseUrl = process.env.DATABASE_URL ?? 'postgres://crew:crew@127.0.0.1:54329/crew_support_test'
@@ -160,6 +162,24 @@ test('a full password queue answers busy instead of waiting', async () => {
   assert.equal(logged.status, 503)
   assert.equal(errorOf(logged.body).code, 'AUTH_BUSY')
   await Promise.allSettled(blockers)
+})
+
+test('nine parallel reads slide the session once and do not open a transaction', async () => {
+  const logged = await sessionApi('/api/v1/session', { method: 'POST', body: { email: 'specialist@crew-support.local', password } })
+  await pool.query('UPDATE auth_sessions SET last_seen_at = $1 WHERE revoked_at IS NULL', [new Date(now.getTime() - 6 * 60 * 1000).toISOString()])
+  const before = sessionSlideWrites()
+  let peak = 0
+  const reads = Promise.all(Array.from({ length: 9 }, () => sessionApi('/api/v1/me', { cookie: logged.cookie })))
+  const watch = setInterval(() => {
+    peak = Math.max(peak, transactionDepth())
+  }, 1)
+  const responses = await reads
+  clearInterval(watch)
+  assert.equal(responses.every((item) => item.status === 200), true)
+  assert.equal(sessionSlideWrites() - before, 1)
+  assert.equal(peak, 0)
+  const seen = await pool.query<{ last_seen_at: Date }>('SELECT last_seen_at FROM auth_sessions WHERE revoked_at IS NULL')
+  assert.equal(new Date(seen.rows[0]?.last_seen_at ?? 0).toISOString(), now.toISOString())
 })
 
 test('an idle session is rejected', async () => {

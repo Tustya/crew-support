@@ -41,6 +41,7 @@ interface Toast {
 
 interface WorkplaceState {
   loaded: boolean
+  generation: number | null
   nowIso: string
   groups: WorkGroup[]
   letters: Record<string, Letter>
@@ -60,8 +61,9 @@ interface WorkplaceState {
   pushToast: (text: string) => void
   dismissToast: (id: number) => void
   fetchCorrections: (basis: 'baseline' | 'previous') => Promise<WorkGroup[]>
+  loadLetter: (groupKey: string) => Promise<void>
+  openNotice: (noticeId: string) => Promise<void>
   importWorkbook: (file: File) => Promise<boolean>
-  establishBaseline: (evidence: string) => Promise<void>
   prepareGroup: (groupKey: string) => Promise<void>
   saveLetter: (letter: Letter, edits: LetterEdits) => Promise<void>
   reviewLetter: (letter: Letter) => Promise<void>
@@ -82,6 +84,7 @@ function defaultTemplates(): Templates {
 
 const EMPTY = {
   loaded: false,
+  generation: null as number | null,
   groups: [],
   letters: {},
   hotels: [],
@@ -96,6 +99,119 @@ const EMPTY = {
 }
 
 let toastSeq = 0
+let refreshQueue: Promise<void> = Promise.resolve()
+let loadedScreen = ''
+
+function screenOf(pathname: string): string {
+  if (pathname.startsWith('/corrections')) return 'corrections'
+  if (pathname.startsWith('/mail')) return 'mail'
+  if (pathname.startsWith('/history')) return 'history'
+  if (pathname.startsWith('/settings')) return 'settings'
+  return 'overview'
+}
+
+async function loadScreen(set: (partial: Partial<WorkplaceState>) => void, get: () => WorkplaceState): Promise<void> {
+  try {
+    const revision = await api<{ generation: number }>('/api/v1/revision')
+    const screen = screenOf(window.location.pathname)
+    if (revision.generation === get().generation && get().loaded && loadedScreen === screen) return
+    if (screen === 'overview') await loadOverview(set, get)
+    else if (screen === 'corrections') await loadCorrections(set)
+    else if (screen === 'mail') await loadMail(set, get)
+    else if (screen === 'history') await loadHistory(set)
+    else await loadSettings(set)
+    loadedScreen = screen
+    set({ loaded: true, generation: revision.generation, nowIso: new Date().toISOString() })
+  } catch (reason) {
+    set({ loaded: true })
+    if (reason instanceof ApiError && reason.status === 401) return
+    get().pushToast(message(reason))
+  }
+}
+
+async function loadOverview(set: (partial: Partial<WorkplaceState>) => void, get: () => WorkplaceState): Promise<void> {
+  const [overview, groupPage] = await Promise.all([
+    api<OverviewDto>('/api/v1/overview'),
+    api<{ items: GroupDto[] }>('/api/v1/groups?limit=100'),
+  ])
+  const hotels = get().hotels
+  set({
+    source: overview.source,
+    groups: groupPage.items.map((group) => toWorkGroup(group, hotels)),
+    journal: overview.recentEvents.map((item) => toJournalEntry(item, hotels)),
+  })
+}
+
+async function loadCorrections(set: (partial: Partial<WorkplaceState>) => void): Promise<void> {
+  const [groupPage, snapshotPage] = await Promise.all([
+    api<{ items: GroupDto[] }>('/api/v1/groups?limit=100'),
+    api<{ items: SnapshotDto[] }>('/api/v1/snapshots'),
+  ])
+  set({
+    groups: groupPage.items.map((group) => toWorkGroup(group, [])),
+    snapshots: snapshotPage.items.map(toSnapshotItem),
+  })
+}
+
+async function loadMail(set: (partial: Partial<WorkplaceState>) => void, get: () => WorkplaceState): Promise<void> {
+  const [groupPage, hotelPage, noticePage] = await Promise.all([
+    api<{ items: GroupDto[] }>('/api/v1/groups?limit=100'),
+    api<{ items: HotelDto[] }>('/api/v1/hotels'),
+    api<{ items: NotificationDto[] }>('/api/v1/notifications'),
+  ])
+  const hotels = hotelPage.items.map(toDirectoryHotel)
+  const groups = groupPage.items.map((group) => toWorkGroup(group, hotels))
+  const selectedKey = new URLSearchParams(window.location.search).get('group')
+  const selected = groups.find((group) => group.key === selectedKey && group.draftId) ?? null
+  const letter = selected?.draftId ? toLetter(await api<DraftDto>(`/api/v1/drafts/${selected.draftId}`), selected.key) : null
+  set({
+    hotels,
+    groups,
+    notices: noticePage.items.map((item) => toNotice(item, hotels)),
+    letters: letter ? { ...get().letters, [letter.groupKey]: letter } : get().letters,
+  })
+}
+
+async function loadHistory(set: (partial: Partial<WorkplaceState>) => void): Promise<void> {
+  const [groupPage, hotelPage, noticePage, auditPage, snapshotPage] = await Promise.all([
+    api<{ items: GroupDto[] }>('/api/v1/groups?limit=100'),
+    api<{ items: HotelDto[] }>('/api/v1/hotels'),
+    api<{ items: NotificationDto[] }>('/api/v1/notifications'),
+    api<{ items: AuditDto[] }>('/api/v1/audit/events?limit=100'),
+    api<{ items: SnapshotDto[] }>('/api/v1/snapshots'),
+  ])
+  const hotels = hotelPage.items.map(toDirectoryHotel)
+  set({
+    hotels,
+    groups: groupPage.items.map((group) => toWorkGroup(group, hotels)),
+    notices: noticePage.items.map((item) => toNotice(item, hotels)),
+    journal: auditPage.items.map((item) => toJournalEntry(item, hotels)),
+    snapshots: snapshotPage.items.map(toSnapshotItem),
+  })
+}
+
+async function loadSettings(set: (partial: Partial<WorkplaceState>) => void): Promise<void> {
+  const [settings, templatePage, hotelPage, integrationPage, snapshotPage, source, groupPage] = await Promise.all([
+    api<SettingsDto>('/api/v1/settings'),
+    api<{ items: TemplateDto[] }>('/api/v1/templates'),
+    api<{ items: HotelDto[] }>('/api/v1/hotels'),
+    api<{ items: IntegrationDto[] }>('/api/v1/integrations/status'),
+    api<{ items: SnapshotDto[] }>('/api/v1/snapshots'),
+    api<SourceDto>('/api/v1/source/status'),
+    api<{ items: GroupDto[] }>('/api/v1/groups?limit=100'),
+  ])
+  const hotels = hotelPage.items.map(toDirectoryHotel)
+  const templates = Object.fromEntries(TEMPLATE_IDS.map((id) => [id, toTemplate(templatePage.items.find((item) => item.template_key === id), id)])) as Templates
+  set({
+    settings,
+    templates,
+    hotels,
+    integrations: integrationPage.items,
+    snapshots: snapshotPage.items.map(toSnapshotItem),
+    source,
+    groups: groupPage.items.map((group) => toWorkGroup(group, hotels)),
+  })
+}
 
 function message(reason: unknown): string {
   if (!(reason instanceof ApiError)) return 'Нет связи с сервером'
@@ -139,45 +255,16 @@ export const useWorkplace = create<WorkplaceState>()((set, get) => {
     ...EMPTY,
     nowIso: new Date().toISOString(),
     toasts: [],
-    refresh: async () => {
-      try {
-        const [overview, groupPage, hotelPage, noticePage, auditPage, snapshotPage, settings, templatePage, integrationPage] = await Promise.all([
-          api<OverviewDto>('/api/v1/overview'),
-          api<{ items: GroupDto[] }>('/api/v1/groups?limit=100'),
-          api<{ items: HotelDto[] }>('/api/v1/hotels'),
-          api<{ items: NotificationDto[] }>('/api/v1/notifications'),
-          api<{ items: AuditDto[] }>('/api/v1/audit/events?limit=100'),
-          api<{ items: SnapshotDto[] }>('/api/v1/snapshots'),
-          api<SettingsDto>('/api/v1/settings'),
-          api<{ items: TemplateDto[] }>('/api/v1/templates'),
-          api<{ items: IntegrationDto[] }>('/api/v1/integrations/status'),
-        ])
-        const hotels = hotelPage.items.map(toDirectoryHotel)
-        const groups = groupPage.items.map((group) => toWorkGroup(group, hotels))
-        const drafts = await Promise.all(groups.filter((group) => group.draftId).map(async (group) => toLetter(await api<DraftDto>(`/api/v1/drafts/${group.draftId}`), group.key)))
-        const templates = Object.fromEntries(TEMPLATE_IDS.map((id) => [id, toTemplate(templatePage.items.find((item) => item.template_key === id), id)])) as Templates
-        set({
-          loaded: true,
-          nowIso: new Date().toISOString(),
-          source: overview.source,
-          groups,
-          letters: Object.fromEntries(drafts.map((letter) => [letter.groupKey, letter])),
-          hotels,
-          notices: noticePage.items.map((item) => toNotice(item, hotels)),
-          journal: auditPage.items.map((item) => toJournalEntry(item, hotels)),
-          snapshots: snapshotPage.items.map(toSnapshotItem),
-          settings,
-          templates,
-          integrations: integrationPage.items,
-        })
-      } catch (reason) {
-        set({ loaded: true })
-        if (reason instanceof ApiError && reason.status === 401) return
-        get().pushToast(message(reason))
-      }
+    refresh: () => {
+      const job = refreshQueue.then(() => loadScreen(set, get))
+      refreshQueue = job.catch(() => undefined)
+      return job
     },
     tick: () => set({ nowIso: new Date().toISOString() }),
-    clear: () => set({ ...EMPTY, templates: defaultTemplates(), toasts: [] }),
+    clear: () => {
+      loadedScreen = ''
+      set({ ...EMPTY, templates: defaultTemplates(), toasts: [] })
+    },
     pushToast: (text) => {
       const id = ++toastSeq
       set((state) => ({ toasts: [...state.toasts.slice(-2), { id, text }] }))
@@ -185,8 +272,19 @@ export const useWorkplace = create<WorkplaceState>()((set, get) => {
     },
     dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
     fetchCorrections: async (basis) => {
-      const page = await api<{ items: GroupDto[] }>(`/api/v1/corrections?basis=${basis}`)
+      const page = await api<{ items: GroupDto[] }>(`/api/v1/corrections?basis=${basis}&limit=100`)
       return page.items.map((group) => toWorkGroup(group, get().hotels))
+    },
+    loadLetter: async (groupKey) => {
+      const group = get().groups.find((item) => item.key === groupKey)
+      if (!group?.draftId) return
+      const letter = toLetter(await api<DraftDto>(`/api/v1/drafts/${group.draftId}`), group.key)
+      set((state) => ({ letters: { ...state.letters, [group.key]: letter } }))
+    },
+    openNotice: async (noticeId) => {
+      const row = await api<{ archived_payload?: { letter?: DraftDto | null } }>(`/api/v1/notifications/${noticeId}`)
+      const letter = row.archived_payload?.letter ?? null
+      set((state) => ({ notices: state.notices.map((item) => (item.id === noticeId ? { ...item, letter } : item)) }))
     },
     importWorkbook: (file) =>
       run(
@@ -194,17 +292,6 @@ export const useWorkplace = create<WorkplaceState>()((set, get) => {
         async () => api('/api/v1/imports', { method: 'POST', body: await file.arrayBuffer(), headers: { 'x-filename': encodeURIComponent(file.name) } }),
         `Файл ${file.name} загружен`,
       ),
-    establishBaseline: async (evidence) => {
-      const snapshotId = get().source?.latestSnapshotId
-      const pending = get().groups.filter((group) => group.status === 'needs_baseline')
-      const basis = evidence.trim()
-      if (!snapshotId || pending.length === 0 || basis.length < 3) return
-      await run(
-        'baseline',
-        () => Promise.all(pending.map((group) => api('/api/v1/baselines', { method: 'POST', body: { groupId: group.key, snapshotId, evidence: basis, confirmed: true } }))),
-        'База зафиксирована',
-      )
-    },
     prepareGroup: async (groupKey) => {
       const group = get().groups.find((item) => item.key === groupKey)
       const bypassQuiet = Boolean(group?.dueAt && group.dueAt > new Date().toISOString())

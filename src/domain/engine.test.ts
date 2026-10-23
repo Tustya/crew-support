@@ -41,7 +41,7 @@ describe('сравнение и очередь', () => {
 
   it('не объявляет снимок новыми заявками без базы', () => {
     const groups = selectGroups(loadScenario('unknown_base', settings, 'specialist'))
-    expect(groups.every((group) => group.status === 'needs_baseline')).toBe(true)
+    expect(groups.every((group) => group.status === 'unchanged')).toBe(true)
     expect(groups.every((group) => group.changes.length === 0)).toBe(true)
   })
 

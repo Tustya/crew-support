@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../api/client'
-import type { ChangeDto, Notice } from '../../api/types'
+import type { CompareEvent, Notice } from '../../api/types'
 import { KIND_LABEL } from '../../domain/labels'
 import { formatMsk, formatStay } from '../../domain/time'
 import { useWorkplace } from '../../state/workplace'
@@ -117,10 +117,10 @@ function SnapshotTable() {
   const pushToast = useWorkplace((state) => state.pushToast)
   const [leftId, setLeftId] = useState('')
   const [rightId, setRightId] = useState('')
-  const [result, setResult] = useState<{ events: ChangeDto[]; ambiguous: boolean } | null>(null)
+  const [result, setResult] = useState<{ events: CompareEvent[]; ambiguous: boolean } | null>(null)
   const compare = async () => {
     try {
-      setResult(await api<{ events: ChangeDto[]; ambiguous: boolean }>(`/api/v1/snapshots/compare?leftId=${leftId}&rightId=${rightId}`))
+      setResult(await api<{ events: CompareEvent[]; ambiguous: boolean }>(`/api/v1/snapshots/compare?leftId=${leftId}&rightId=${rightId}`))
     } catch {
       pushToast('Сравнение не выполнено')
     }
@@ -170,9 +170,14 @@ function SnapshotTable() {
 
 function NoticeTable({ hotelName, date }: { hotelName?: string; date: string }) {
   const notices = useWorkplace((state) => state.notices)
+  const openNotice = useWorkplace((state) => state.openNotice)
+  const generation = useWorkplace((state) => state.generation)
   const [id, setId] = useState<string | null>(null)
   const visible = notices.filter((item) => (!hotelName || item.hotelName === hotelName) && (!date || item.localStayDate === date))
   const selected = notices.find((item) => item.id === id) ?? null
+  useEffect(() => {
+    if (selected) void openNotice(selected.id)
+  }, [generation, openNotice, selected?.id])
   if (visible.length === 0) return <EmptyState title="Уведомлений ещё нет" />
   return (
     <>
@@ -184,7 +189,7 @@ function NoticeTable({ hotelName, date }: { hotelName?: string; date: string }) 
               <tr key={item.id} tabIndex={0} className="cursor-pointer border-t border-line hover:bg-muted" onClick={() => setId(item.id)} onKeyDown={(keyEvent) => { if (keyEvent.key === 'Enter') setId(item.id) }}>
                 <td className="py-3">{item.hotelName}</td>
                 <td>{formatStay(item.localStayDate)}</td>
-                <td>{item.letter?.subject ?? '—'}</td>
+                <td>{item.subject ?? item.letter?.subject ?? '—'}</td>
                 <td>v{item.revision}</td>
                 <td>{TRANSPORT_LABEL[item.transport]}</td>
                 <td className="tabular-nums">{formatMsk(item.sentAt ?? item.createdAt)}</td>

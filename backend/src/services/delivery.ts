@@ -5,6 +5,7 @@ import { HttpError } from '../errors.ts'
 import type { AppConfig } from '../config.ts'
 import { writeAudit } from './audit.ts'
 import { letterFingerprint } from './drafts.ts'
+import { rebuildQueueViews } from './queueView.ts'
 import { groupById, loadState, sourceProblem, type Actor } from './state.ts'
 import { diffBookings } from '../domain/diff.ts'
 import { nextQuietTimer } from '../domain/timer.ts'
@@ -40,6 +41,7 @@ export async function handoffDraft(
     details: { revision: input.revision },
     correlationId: input.correlationId,
   })
+  await rebuildQueueViews(client, input.now, prepared.groupKey)
   return body
 }
 
@@ -102,6 +104,7 @@ export async function finishSend(
     await client.query(`UPDATE notifications SET transport_status = 'delivery_unknown', updated_at = $2 WHERE id = $1`, [row.id, input.now.toISOString()])
     await writeAudit(client, audit(input, row.group_key, 'delivery.unknown', row.id))
     await rememberDelivery(client, row.id, 'delivery_unknown')
+    await rebuildQueueViews(client, input.now, row.group_key)
     return { notificationId: row.id, transportStatus: 'delivery_unknown' }
   }
   if (input.outcome === 'reject') {
@@ -113,6 +116,7 @@ export async function finishSend(
     await client.query(`UPDATE drafts SET status = 'send_failed', updated_at = $2 WHERE group_key = $1 AND status = 'sending'`, [row.group_key, input.now.toISOString()])
     await writeAudit(client, audit(input, row.group_key, 'delivery.rejected', row.id))
     await rememberDelivery(client, row.id, 'send_failed')
+    await rebuildQueueViews(client, input.now, row.group_key)
     return { notificationId: row.id, transportStatus: 'send_failed' }
   }
   const latest = await latestPayload(client, row.group_key)
@@ -125,9 +129,10 @@ export async function finishSend(
   await client.query(`UPDATE drafts SET status = 'sent', updated_at = $2 WHERE group_key = $1 AND status = 'sending'`, [row.group_key, input.now.toISOString()])
   await writeBaseline(client, row.group_key, archived, row.id, 'send', input.actorId, input.now.toISOString(), null)
   await refreshTimer(client, row.group_key, input.now.toISOString())
-await writeAudit(client, audit(input, row.group_key, 'delivery.sent', row.id))
-    await rememberDelivery(client, row.id, 'sent')
-    return { notificationId: row.id, transportStatus: 'sent' }
+  await writeAudit(client, audit(input, row.group_key, 'delivery.sent', row.id))
+  await rememberDelivery(client, row.id, 'sent')
+  await rebuildQueueViews(client, input.now, row.group_key)
+  return { notificationId: row.id, transportStatus: 'sent' }
 }
 
 export async function confirmExternal(
@@ -168,6 +173,7 @@ export async function confirmExternal(
     details: { baselineRevision: revision },
     correlationId: input.correlationId,
   })
+  await rebuildQueueViews(client, input.now, row.group_key)
   return { baselineRevision: revision, groupKey: row.group_key }
 }
 
@@ -240,6 +246,7 @@ export async function establishBaseline(
     details: { revisionNo },
     correlationId: input.correlationId,
   })
+  await rebuildQueueViews(client, input.now, row.group_key)
   return { revisionNo, groupKey: row.group_key }
 }
 
@@ -271,7 +278,7 @@ async function assertReviewed(
   )
   const current = version.rows[0]
   if (!current?.payload.letter || !current.reviewed_fingerprint) throw new HttpError(409, 'REVIEW_REQUIRED', 'Версия не проверена')
-  const state = await loadState(client)
+  const state = await loadState(client, row.group_key)
   const source = sourceProblem(state, input.now)
   if (source) throw new HttpError(409, source, 'Источник не готов')
   const projected = groupById(state, input.now, state.groups.find((group) => group.groupKey === row.group_key)?.id ?? '')
@@ -325,7 +332,7 @@ async function writeBaseline(
 }
 
 async function latestPayload(client: PoolClient, groupKey: string): Promise<StoredPayload | null> {
-  const state = await loadState(client)
+  const state = await loadState(client, groupKey)
   const group = state.groups.find((item) => item.groupKey === groupKey)
   if (!group) return null
   const projected = groupById(state, new Date(), group.id)
@@ -333,7 +340,7 @@ async function latestPayload(client: PoolClient, groupKey: string): Promise<Stor
 }
 
 async function refreshTimer(client: PoolClient, groupKey: string, nowIso: string): Promise<void> {
-  const state = await loadState(client)
+  const state = await loadState(client, groupKey)
   const settings = state.settings.quietMinutes
   const group = state.groups.find((item) => item.groupKey === groupKey)
   const projected = group ? groupById(state, new Date(nowIso), group.id) : null

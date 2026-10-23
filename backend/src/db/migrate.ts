@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { sha256Hex } from '../domain/hash.ts'
 import { createPool } from './pool.ts'
+import { rebuildQueueViews } from '../services/queueView.ts'
 import { ensureTemplates } from './reference.ts'
 
 const migrationsDir = fileURLToPath(new URL('../../migrations/', import.meta.url))
@@ -41,6 +42,17 @@ export async function migrate(databaseUrl: string): Promise<string[]> {
       }
     }
     await ensureTemplates(pool)
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      await rebuildQueueViews(client, new Date())
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
     return applied
   } finally {
     await pool.end()

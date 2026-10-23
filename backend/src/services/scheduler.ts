@@ -17,12 +17,15 @@ async function prepareDueGroups(pool: Pool, config: AppConfig): Promise<void> {
       const settings = await client.query<{ auto_prepare: boolean }>('SELECT auto_prepare FROM app_settings WHERE id = 1')
       if (!settings.rows[0]?.auto_prepare) return false
       const due = await client.query<{ id: string }>(
-        `SELECT wg.id FROM work_groups wg
-         WHERE wg.due_at IS NOT NULL AND wg.due_at <= $1
+        `SELECT wg.id
+         FROM queue_views q
+         JOIN work_groups wg ON wg.id = q.group_id
+         WHERE q.basis = 'baseline'
+           AND q.due_at IS NOT NULL AND q.due_at <= $1
            AND NOT EXISTS (
              SELECT 1 FROM drafts d WHERE d.group_key = wg.group_key AND d.status IN ('active', 'reviewed', 'sending', 'handed_off')
            )
-         ORDER BY wg.due_at
+         ORDER BY q.due_at
          FOR UPDATE OF wg SKIP LOCKED
          LIMIT 1`,
         [config.now().toISOString()],

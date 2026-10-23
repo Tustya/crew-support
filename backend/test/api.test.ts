@@ -7,7 +7,8 @@ import { readConfig } from '../src/config.ts'
 import { createPool } from '../src/db/pool.ts'
 import { migrate } from '../src/db/migrate.ts'
 import { insertUser, resetBusinessData } from '../src/db/reference.ts'
-import { startServer, type RunningServer } from '../src/http/server.ts'
+import { importPauseWaiting, pauseNextImport, startServer, type RunningServer } from '../src/http/server.ts'
+import { transactionDepth } from '../src/db/pool.ts'
 import { runScheduler } from '../src/services/scheduler.ts'
 
 const databaseUrl = process.env.DATABASE_URL ?? 'postgres://crew:crew@127.0.0.1:54329/crew_support_test'
@@ -85,9 +86,9 @@ test('unchanged polls do not move the queue and a later change resets dueAt', as
   const snapshots = await pool.query('SELECT count(*)::int AS count FROM snapshots')
   assert.equal(snapshots.rows[0]?.count, 1)
   const listed = await api('/api/v1/groups?limit=100')
-  const items = listed.body.items as Array<{ id: string; dueAt: string | null; latestBookings: Array<{ fullName: string }> }>
-  const angel = items.find((item) => item.latestBookings.some((booking) => booking.fullName.startsWith('Иванов')))
-  const petr = items.find((item) => item.latestBookings.some((booking) => booking.fullName.startsWith('Петров')))
+  const items = listed.body.items as Array<{ id: string; dueAt: string | null; crewNames: string[] }>
+  const angel = items.find((item) => item.crewNames.some((name) => name.startsWith('Иванов')))
+  const petr = items.find((item) => item.crewNames.some((name) => name.startsWith('Петров')))
   assert.ok(angel && petr)
   assert.equal(angel.dueAt, null)
   const baseline = await api('/api/v1/baselines', { method: 'POST', body: { groupId: angel.id, snapshotId: first.body.snapshotId, evidence: 'Сверка с рассылкой 06:00', confirmed: true } })
@@ -99,15 +100,15 @@ test('unchanged polls do not move the queue and a later change resets dueAt', as
   now = new Date('2026-10-20T11:05:00.000Z')
   await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'delayed_more' } })
   const after = await api('/api/v1/groups?limit=100')
-  const nextItems = after.body.items as Array<{ dueAt: string | null; latestBookings: Array<{ fullName: string; arrivalLocalTime: string }> }>
-  const ivan = nextItems.find((item) => item.latestBookings.some((booking) => booking.fullName.startsWith('Иванов')))
-  const other = nextItems.find((item) => item.latestBookings.some((booking) => booking.fullName.startsWith('Петров')))
+  const nextItems = after.body.items as Array<{ dueAt: string | null; crewNames: string[] }>
+  const ivan = nextItems.find((item) => item.crewNames.some((name) => name.startsWith('Иванов')))
+  const other = nextItems.find((item) => item.crewNames.some((name) => name.startsWith('Петров')))
   assert.equal(ivan?.dueAt, '2026-10-20T12:05:00.000Z')
   assert.equal(other?.dueAt, null)
   const eventsBefore = await pool.query('SELECT count(*)::int AS count FROM change_events')
   await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'reverted' } })
   const quiet = await api('/api/v1/groups?limit=100')
-  const reverted = (quiet.body.items as Array<{ dueAt: string | null; latestBookings: Array<{ fullName: string }> }>).find((item) => item.latestBookings.some((booking) => booking.fullName.startsWith('Иванов')))
+  const reverted = (quiet.body.items as Array<{ dueAt: string | null; crewNames: string[] }>).find((item) => item.crewNames.some((name) => name.startsWith('Иванов')))
   assert.equal(reverted?.dueAt, null)
   const eventsAfter = await pool.query('SELECT count(*)::int AS count FROM change_events')
   assert.ok(eventsAfter.rows[0].count > eventsBefore.rows[0].count)
@@ -154,9 +155,11 @@ test('letter views carry everything the hotel preview renders', async () => {
   assert.ok(draft.body.createdAt)
   await api(`/api/v1/drafts/${prepared.body.draftId}/review`, { method: 'POST', body: { revision: draft.body.revision, fingerprint: draft.body.fingerprint, confirmed: true } })
   await api(`/api/v1/drafts/${prepared.body.draftId}/handoff`, { method: 'POST', body: { revision: draft.body.revision }, headers: { 'idempotency-key': randomUUID() } })
-  const [notice] = listed<{ revision: number; letter: { subject: string } }>(await api('/api/v1/notifications'))
+  const [notice] = listed<{ id: string; revision: number; subject: string; letter?: unknown }>(await api('/api/v1/notifications'))
   assert.equal(notice?.revision, draft.body.revision)
-  assert.equal(notice?.letter.subject, draft.body.subject)
+  assert.equal(notice?.letter, undefined)
+  const opened = await api(`/api/v1/notifications/${notice?.id}`)
+  assert.equal((opened.body.archived_payload as { letter: { subject: string } }).letter.subject, draft.body.subject)
   assert.ok(listed<{ display_name: string | null }>(await api('/api/v1/audit/events?limit=5')).some((item) => item.display_name))
   assert.ok((listed<{ blocks: unknown[] }>(await api('/api/v1/templates'))[0]?.blocks.length ?? 0) > 0)
   assert.ok((listed<{ row_count: number }>(await api('/api/v1/snapshots'))[0]?.row_count ?? 0) > 0)
@@ -340,6 +343,30 @@ test('exporting the journal records who downloaded it', async () => {
   assert.ok(recorded?.display_name)
 })
 
+test('workbook parse finishes before a database transaction and live health still answers', async () => {
+  let release = () => {}
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  pauseNextImport(gate)
+  const pending = fetch(`${server.url}/api/v1/imports`, {
+    method: 'POST',
+    headers: { 'x-dev-subject': 'dev-specialist', 'content-type': 'application/octet-stream', 'x-filename': 'row-bomb.xlsx' },
+    body: new Uint8Array(sheetWorkbook('<row r="1000000"><c r="A1"><v>1</v></c></row>')),
+  })
+  const started = Date.now()
+  while (!importPauseWaiting()) {
+    if (Date.now() - started > 5000) throw new Error('import did not pause')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.equal(transactionDepth(), 0)
+  const live = await fetch(`${server.url}/health/live`)
+  assert.equal(live.status, 200)
+  release()
+  const uploaded = await pending
+  assert.equal(uploaded.status, 422)
+})
+
 test('an oversized sheet is rejected and does not create a snapshot', async () => {
   const before = await pool.query('SELECT count(*)::int AS count FROM snapshots')
   const uploaded = await fetch(`${server.url}/api/v1/imports`, {
@@ -410,9 +437,79 @@ test('handed-off letter rebuilds only after newer data makes it stale', async ()
   assert.ok(Number(next.body.revision) > Number(draft.body.revision))
 })
 
-async function angelGroup(): Promise<{ id: string; changeCount: number; baselineBookings: Array<{ arrivalLocalTime: string }>; latestBookings: Array<{ arrivalLocalTime: string; fullName: string }> }> {
-  const listed = await api('/api/v1/groups?limit=100')
-  const group = (listed.body.items as Array<{ id: string; changeCount: number; baselineBookings: Array<{ arrivalLocalTime: string }> | null; latestBookings: Array<{ arrivalLocalTime: string; fullName: string }> }>).find((item) => item.latestBookings.some((booking) => booking.fullName.startsWith('Иванов')))
+test('queue pages keep one order and a later row stays reachable by name', async () => {
+  await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'base' } })
+  await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'delayed' } })
+  const first = await api('/api/v1/groups?limit=1')
+  const second = await api('/api/v1/groups?limit=1')
+  const firstId = (first.body.items as Array<{ id: string }>)[0]?.id
+  assert.equal((second.body.items as Array<{ id: string }>)[0]?.id, firstId)
+  const corrections = await api('/api/v1/corrections?basis=previous&limit=100')
+  const hop = (corrections.body.items as Array<{ crewNames: string[]; changeCount: number; changes: Array<{ kind: string }> }>).find((item) => item.crewNames.some((name) => name.startsWith('Иванов')))
+  assert.equal(hop?.changes.some((change) => change.kind === 'arrival'), true)
+  assert.ok((hop?.changeCount ?? 0) > 0)
+  const anchorId = randomUUID()
+  await pool.query(`INSERT INTO work_groups (id, group_key, airport_code, stay_date) VALUES ($1, 'anchor|SVX|2026-10-09', 'SVX', '2026-10-09')`, [anchorId])
+  await pool.query(
+    `INSERT INTO work_groups (group_key, airport_code, stay_date)
+     SELECT 'filler-' || n || '|SVX|2026-10-09', 'SVX', '2026-10-09' FROM generate_series(1, 120) AS n`,
+  )
+  await pool.query(
+    `INSERT INTO queue_views (group_id, basis, status, change_count, crew_names, changes, exceptions, stay_date, airport_code, hotel_name, group_key, version, has_baseline)
+     SELECT id, 'baseline', 'unchanged', 0, ARRAY['Фоновый'], '[]'::jsonb, '[]'::jsonb, stay_date, airport_code, '', group_key, 1, false
+     FROM work_groups WHERE group_key LIKE 'filler-%'`,
+  )
+  await pool.query(
+    `INSERT INTO queue_views (group_id, basis, status, change_count, crew_names, changes, exceptions, stay_date, airport_code, hotel_name, group_key, version, has_baseline)
+     VALUES ($1, 'baseline', 'needs_decision', 0, ARRAY['Яковлев Я.Я.'], '[]'::jsonb, '[]'::jsonb, '2026-10-09', 'SVX', '', 'anchor|SVX|2026-10-09', 1, false)`,
+    [anchorId],
+  )
+  const top = await api('/api/v1/groups?limit=1')
+  assert.equal((top.body.items as Array<{ id: string }>)[0]?.id, anchorId)
+  const named = await api('/api/v1/groups?query=Иванов&limit=100')
+  assert.equal((named.body.items as Array<{ crewNames: string[] }>).some((item) => item.crewNames.some((name) => name.startsWith('Иванов'))), true)
+  const handed = await angelGroup()
+  const checked = await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'base' } })
+  await api('/api/v1/baselines', { method: 'POST', body: { groupId: handed.id, snapshotId: checked.body.snapshotId, evidence: 'База для статуса', confirmed: true } })
+  await api('/api/v1/source/check', { method: 'POST', body: { fixture: 'delayed' } })
+  const prepared = await api(`/api/v1/groups/${handed.id}/prepare`, { method: 'POST', body: { bypassQuiet: true, reason: 'Статус строки' } })
+  const draft = await api(`/api/v1/drafts/${prepared.body.draftId}`)
+  await api(`/api/v1/drafts/${prepared.body.draftId}/review`, { method: 'POST', body: { revision: draft.body.revision, fingerprint: draft.body.fingerprint, confirmed: true } })
+  await api(`/api/v1/drafts/${prepared.body.draftId}/handoff`, { method: 'POST', body: { revision: draft.body.revision }, headers: { 'idempotency-key': randomUUID() } })
+  const stored = await pool.query<{ status: string }>(`SELECT status FROM queue_views WHERE group_id = $1 AND basis = 'baseline'`, [handed.id])
+  const viewed = await api(`/api/v1/groups/${handed.id}`)
+  assert.equal(stored.rows[0]?.status, 'handed_off')
+  assert.equal(viewed.body.status, 'handed_off')
+})
+
+async function angelGroup(): Promise<{ id: string; changeCount: number; baselineBookings: Array<{ arrivalLocalTime: string; fullName: string }>; latestBookings: Array<{ arrivalLocalTime: string; fullName: string }> }> {
+  const listed = await api('/api/v1/groups?limit=100&query=Иванов')
+  const group = (listed.body.items as Array<{ id: string; groupKey: string; changeCount: number; crewNames: string[] }>).find((item) => item.crewNames.some((name) => name.startsWith('Иванов')))
   if (!group) throw new Error('angel group missing')
-  return { ...group, baselineBookings: group.baselineBookings ?? [] }
+  const latest = await pool.query<{ arrival_local_time: string; full_name: string }>(
+    `SELECT to_char(b.arrival_local_time, 'HH24:MI') AS arrival_local_time, b.full_name
+     FROM snapshot_bookings b
+     JOIN work_groups g ON g.group_key = $1
+     WHERE b.snapshot_id = (SELECT id FROM snapshots ORDER BY fetched_at DESC, seq DESC LIMIT 1)
+       AND b.hotel_id IS NOT DISTINCT FROM g.hotel_id
+       AND btrim(b.airport_code) = g.airport_code
+       AND b.stay_date = g.stay_date
+     ORDER BY b.full_name`,
+    [group.groupKey],
+  )
+  const baseline = await pool.query<{ arrival_local_time: string; full_name: string }>(
+    `SELECT booking->>'arrivalLocalTime' AS arrival_local_time, booking->>'fullName' AS full_name
+     FROM notification_baselines nb
+     CROSS JOIN LATERAL jsonb_array_elements(nb.payload->'bookings') WITH ORDINALITY AS listed(booking, ordinality)
+     WHERE nb.group_key = $1
+       AND nb.revision_no = (SELECT max(revision_no) FROM notification_baselines WHERE group_key = $1)
+     ORDER BY listed.ordinality`,
+    [group.groupKey],
+  )
+  return {
+    id: group.id,
+    changeCount: group.changeCount,
+    latestBookings: latest.rows.map((row) => ({ arrivalLocalTime: row.arrival_local_time, fullName: row.full_name })),
+    baselineBookings: baseline.rows.map((row) => ({ arrivalLocalTime: row.arrival_local_time, fullName: row.full_name })),
+  }
 }

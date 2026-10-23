@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { Letter, Notice, WorkGroup } from '../../api/types'
 import { STATUS_LABEL } from '../../domain/labels'
@@ -32,6 +32,8 @@ export function MailPage() {
   const letters = useWorkplace((state) => state.letters)
   const busy = useWorkplace((state) => state.busy)
   const prepareGroup = useWorkplace((state) => state.prepareGroup)
+  const loadLetter = useWorkplace((state) => state.loadLetter)
+  const generation = useWorkplace((state) => state.generation)
   const [params, setParams] = useSearchParams()
   const requestedGroup = groups.find((group) => group.key === params.get('group'))
   const tab: Tab = TABS.some((item) => item[0] === params.get('tab')) ? (params.get('tab') as Tab) : requestedGroup ? tabOf(requestedGroup) : 'review'
@@ -40,6 +42,9 @@ export function MailPage() {
   const selectedKey = params.get('group') ?? listed[0]?.key ?? ''
   const selected = groups.find((group) => group.key === selectedKey) ?? null
   const letter = selected ? letters[selected.key] ?? null : null
+  useEffect(() => {
+    if (selected?.draftId) void loadLetter(selected.key)
+  }, [generation, loadLetter, selected?.draftId, selected?.key])
   if (!loaded) return <p className="text-sm text-ink-soft">Загрузка…</p>
   return (
     <div className="flex flex-col gap-4">
@@ -209,10 +214,15 @@ function SentList() {
   const notices = useWorkplace((state) => state.notices)
   const busy = useWorkplace((state) => state.busy)
   const confirmOutside = useWorkplace((state) => state.confirmOutside)
+  const openNotice = useWorkplace((state) => state.openNotice)
+  const generation = useWorkplace((state) => state.generation)
   const [id, setId] = useState<string | null>(notices[0]?.id ?? null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [basis, setBasis] = useState('Отправлено из почтового клиента')
   const selected = notices.find((item) => item.id === id) ?? notices[0] ?? null
+  useEffect(() => {
+    if (selected) void openNotice(selected.id)
+  }, [generation, openNotice, selected?.id])
   if (notices.length === 0) return <EmptyState title="Отправленных писем ещё нет" />
   return (
     <div className="grid gap-4 lg:grid-cols-[320px_1fr]">

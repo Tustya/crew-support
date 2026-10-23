@@ -59,7 +59,7 @@ describe('crew support domain', () => {
     const data = loadScenario('unknown_base', defaultSettings(), 'specialist')
     const groups = selectGroups(data)
     expect(groups.every((group) => group.changes.length === 0)).toBe(true)
-    expect(groups.some((group) => group.status === 'needs_baseline')).toBe(true)
+    expect(groups.every((group) => group.status === 'unchanged')).toBe(true)
     expect(data.drafts).toHaveLength(0)
   })
 

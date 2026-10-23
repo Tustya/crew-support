@@ -1,10 +1,8 @@
-import { FIELD_LABELS } from '../domain/diff'
 import { formatMsk } from '../domain/time'
-import type { FieldDelta, GroupException, Hotel, MailTemplate, TemplateId } from '../domain/types'
+import type { GroupException, Hotel, MailTemplate, TemplateId } from '../domain/types'
 import { defaultTemplate } from '../domain/templates'
 import type {
   AuditDto,
-  BookingDto,
   ChangeDto,
   ChangeView,
   DirectoryHotel,
@@ -60,8 +58,6 @@ const DETAIL_LABEL: Record<string, string> = {
   airport: 'аэропорт',
   code: 'код',
 }
-
-const RECORD_STATUS: Record<string, string> = { active: 'активна', cancelled: 'отмена' }
 
 const REASON_LABEL: Record<string, string> = {
   bad_credentials: 'неверная почта или пароль',
@@ -121,50 +117,38 @@ function placeholderHotel(id: string, airportCode: string): Hotel {
   }
 }
 
-function bookingValue(booking: BookingDto | null, field: string, hotels: Hotel[]): string {
-  if (!booking) return ''
-  const value = (booking as unknown as Record<string, unknown>)[field]
-  if (field === 'recordStatus') return RECORD_STATUS[String(value)] ?? ''
-  if (field === 'hotelId') return hotels.find((hotel) => hotel.id === value)?.name ?? ''
-  return value === null || value === undefined ? '' : String(value)
-}
-
-function changeFields(change: ChangeDto, hotels: Hotel[]): FieldDelta[] {
-  if (change.kind === 'cancelled') return [{ field: 'recordStatus', label: FIELD_LABELS.recordStatus ?? 'recordStatus', before: 'активна', after: 'отмена' }]
-  return change.changedFields
-    .map((field) => ({ field, label: FIELD_LABELS[field] ?? field, before: bookingValue(change.before, field, hotels), after: bookingValue(change.after, field, hotels) }))
-    .filter((delta) => delta.before !== delta.after)
-}
-
-function toChange(change: ChangeDto, detectedAt: string | null, hotels: Hotel[]): ChangeView {
+function toChange(change: ChangeDto, detectedAt: string | null): ChangeView {
   return {
     id: `${change.entityKey}|${change.kind}|${change.groupKey}`,
-    fullName: change.after?.fullName ?? change.before?.fullName ?? '—',
+    fullName: change.fullName,
     groupKey: change.groupKey,
     linkedGroupKey: change.linkedGroupKey,
-    replacement: Boolean(change.after?.replacementOf),
+    replacement: change.replacement,
     kind: change.kind,
-    fields: changeFields(change, hotels),
+    fields: change.fields,
     detectedAt,
   }
 }
 
 export function toWorkGroup(dto: GroupDto, hotels: Hotel[]): WorkGroup {
-  const hotel = hotels.find((item) => item.id === dto.hotel?.id) ?? placeholderHotel(dto.hotel?.id ?? `unmapped:${dto.id}`, dto.airportCode)
+  const directory = hotels.find((item) => item.id === dto.hotel?.id)
+  const hotel = directory ?? (dto.hotel
+    ? { ...placeholderHotel(dto.hotel.id, dto.airportCode), name: dto.hotel.name, city: dto.hotel.city, timezone: dto.hotel.timezone, utcOffset: utcOffsetOf(dto.hotel.timezone) }
+    : placeholderHotel(`unmapped:${dto.id}`, dto.airportCode))
   return {
     key: dto.id,
     groupKey: dto.groupKey,
     hotel,
     airportCode: dto.airportCode,
     localStayDate: dto.stayDate,
-    changes: dto.changes.map((change) => toChange(change, dto.lastMeaningfulChangeAt, hotels)),
+    changes: dto.changes.map((change) => toChange(change, dto.lastMeaningfulChangeAt)),
     lastChangeAt: dto.lastMeaningfulChangeAt,
     dueAt: dto.dueAt,
     status: dto.status,
     exceptions: dto.exceptions as GroupException[],
     draftId: dto.draftId,
     revision: dto.revision,
-    crewNames: dto.latestBookings.map((booking) => booking.fullName),
+    crewNames: dto.crewNames,
   }
 }
 
@@ -184,6 +168,7 @@ export function toNotice(dto: NotificationDto, hotels: Hotel[]): Notice {
     groupKey: dto.group_key,
     revision: Number(dto.revision),
     transport: dto.transport_status,
+    subject: dto.subject ?? dto.letter?.subject ?? null,
     letter: dto.letter,
     hotelName: parts.hotel?.name ?? '—',
     airportCode: parts.airportCode,

@@ -138,8 +138,6 @@ export function selectGroups(data: DemoData, basis: 'baseline' | 'previous' = 'b
     const liveFingerprint = fingerprintBookings(latestGroup)
     const hotelRecipientKey = recipientKey(knownHotel ?? hotel)
     const status = resolveStatus({
-      baselineEstablished: data.baselineEstablished,
-      hasBaselineEntry: data.baselineEstablished || Boolean(data.baselines[key]),
       changeCount: changes.length,
       exceptions,
       draft,
@@ -226,8 +224,6 @@ function exceptionsFor(input: {
 }
 
 export function resolveStatus(input: {
-  baselineEstablished: boolean
-  hasBaselineEntry: boolean
   changeCount: number
   exceptions: GroupException[]
   draft: Draft | null
@@ -239,7 +235,6 @@ export function resolveStatus(input: {
 }): QueueStatus {
   if (input.preparing) return 'preparing'
   if (input.exceptions.some((item) => item.blocking)) return 'needs_decision'
-  if (!input.baselineEstablished && !input.hasBaselineEntry) return 'needs_baseline'
   const draft = input.draft
   const drifted = Boolean(draft && (draft.dataFingerprint !== input.liveFingerprint || draft.recipientKey !== input.recipientKey))
   if (input.changeCount === 0) {

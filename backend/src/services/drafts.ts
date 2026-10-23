@@ -4,6 +4,7 @@ import { sha256, stableStringify } from '../domain/hash.ts'
 import { blockText, type MailTemplate, type TemplateBlock } from '../domain/templates.ts'
 import { HttpError } from '../errors.ts'
 import { writeAudit } from './audit.ts'
+import { rebuildQueueViews } from './queueView.ts'
 import { groupById, loadState, sourceProblem, type Actor } from './state.ts'
 import type { StoredPayload } from '../domain/payload.ts'
 
@@ -16,7 +17,7 @@ export async function prepareGroup(
   const locked = await client.query<{ group_key: string }>('SELECT group_key FROM work_groups WHERE id = $1 FOR UPDATE', [input.groupId])
   const groupKey = locked.rows[0]?.group_key
   if (!groupKey) throw new HttpError(404, 'GROUP_NOT_FOUND', 'Группа не найдена')
-  const state = await loadState(client)
+  const state = await loadState(client, groupKey)
   const group = groupById(state, input.now, input.groupId)
   if (!group) throw new HttpError(404, 'GROUP_NOT_FOUND', 'Группа не найдена')
   const source = sourceProblem(state, input.now)
@@ -30,6 +31,7 @@ export async function prepareGroup(
   const existing = await client.query(`SELECT id FROM drafts WHERE group_key = $1 AND status = ANY($2::text[])`, [groupKey, OPEN_DRAFT])
   if (existing.rows.length > 0) throw new HttpError(409, 'DRAFT_EXISTS', 'Для группы уже есть рабочее письмо')
   const created = await insertDraft(client, state, group, input.actor, input.now, input.correlationId, input.automatic)
+  await rebuildQueueViews(client, input.now, groupKey)
   if (input.bypassQuiet) {
     await writeAudit(client, {
       occurredAt: input.now.toISOString(),
@@ -187,7 +189,7 @@ export async function patchDraft(
   const texts = [input.subject, input.intro, input.closing, input.signature, ...input.overrides.map((item) => item.value)]
   if (texts.some((text) => hasMarkup(text) || text.length > 2000)) throw new HttpError(422, 'MARKUP_FORBIDDEN', 'HTML в письме запрещён')
   if (input.overrides.some((item) => item.reason.trim().length < 3)) throw new HttpError(422, 'REASON_REQUIRED', 'Для ручной правки нужно основание')
-  const state = await loadState(client)
+  const state = await loadState(client, draft.group_key)
   const group = [...state.groups].find((item) => item.groupKey === draft.group_key)
   const hotel = state.hotels.find((item) => item.id === group?.hotelId)
   if (!hotel) throw new HttpError(409, 'HOTEL_MAPPING_MISSING', 'Гостиница не сопоставлена')
@@ -250,6 +252,7 @@ export async function patchDraft(
     details: { revision },
     correlationId: input.correlationId,
   })
+  await rebuildQueueViews(client, input.now, draft.group_key)
   return { revision, fingerprint: letterFingerprint(nextLetter), status: 'active' }
 }
 
@@ -264,7 +267,7 @@ export async function reviewDraft(
   const letter = version.payload.letter
   if (!letter) throw new HttpError(409, 'DRAFT_EMPTY', 'У версии нет текста')
   if (letterFingerprint(letter) !== input.fingerprint) throw new HttpError(409, 'FINGERPRINT_MISMATCH', 'Текст письма не совпадает с сохранённой версией')
-  const state = await loadState(client)
+  const state = await loadState(client, draft.group_key)
   const projected = projectDraft(state, input.now, draft.group_key)
   if (!projected) throw new HttpError(404, 'GROUP_NOT_FOUND', 'Группа не найдена')
   const source = sourceProblem(state, input.now)
@@ -294,6 +297,7 @@ export async function reviewDraft(
     details: { revision: input.revision },
     correlationId: input.correlationId,
   })
+  await rebuildQueueViews(client, input.now, draft.group_key)
   return { status: 'reviewed', reviewedAt }
 }
 
@@ -303,7 +307,7 @@ export async function rebuildDraft(
 ): Promise<{ revision: number; fingerprint: string }> {
   const draft = await lockDraft(client, input.draftId)
   if (draft.status === 'sending') throw new HttpError(409, 'DRAFT_LOCKED', 'Письмо нельзя пересобрать')
-  const state = await loadState(client)
+  const state = await loadState(client, draft.group_key)
   const groupId = state.groups.find((group) => group.groupKey === draft.group_key)?.id ?? ''
   const group = groupById(state, input.now, groupId)
   if (!group) throw new HttpError(404, 'GROUP_NOT_FOUND', 'Группа не найдена')
@@ -353,6 +357,7 @@ export async function rebuildDraft(
     template.id,
     input.now.toISOString(),
   ])
+  await rebuildQueueViews(client, input.now, draft.group_key)
   return { revision, fingerprint: letterFingerprint(letter) }
 }
 

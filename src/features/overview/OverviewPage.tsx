@@ -4,21 +4,16 @@ import type { WorkGroup } from '../../api/types'
 import { STATUS_LABEL, sourceProblemText, statusRank, summarizeChanges, summarizeKindCounts } from '../../domain/labels'
 import { ageLabel, formatMsk, formatStay, mskDate, nextDate, pluralWord, remainingMinutes } from '../../domain/time'
 import { useWorkplace } from '../../state/workplace'
-import { Badge, Banner, Button, Dialog, Drawer, EmptyState, cardClass } from '../../ui/kit'
+import { Badge, Banner, Button, Drawer, EmptyState, cardClass } from '../../ui/kit'
 import { OVERVIEW_CARDS, overviewCardCount, passesQueueFilter, type OverviewCard, type QueueDateFilter, type QueueFilterGroup } from './overviewCards'
 
 export function OverviewPage() {
   const loaded = useWorkplace((state) => state.loaded)
-  const nowIso = useWorkplace((state) => state.nowIso)
   const allGroups = useWorkplace((state) => state.groups)
-  const letters = useWorkplace((state) => state.letters)
   const source = useWorkplace((state) => state.source)
   const journal = useWorkplace((state) => state.journal)
-  const snapshots = useWorkplace((state) => state.snapshots)
-  const integrations = useWorkplace((state) => state.integrations)
   const busy = useWorkplace((state) => state.busy)
   const refresh = useWorkplace((state) => state.refresh)
-  const establishBaseline = useWorkplace((state) => state.establishBaseline)
   const prepareGroup = useWorkplace((state) => state.prepareGroup)
   const importWorkbook = useWorkplace((state) => state.importWorkbook)
   const navigate = useNavigate()
@@ -28,18 +23,17 @@ export function OverviewPage() {
   const [query, setQuery] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const workbookRef = useRef<HTMLInputElement>(null)
-  const [baseOpen, setBaseOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [rowWindow, setRowWindow] = useState(100)
   const groups = useMemo(() => [...allGroups].sort((left, right) => statusRank(left.status) - statusRank(right.status)), [allGroups])
-  const today = mskDate(nowIso)
+  const today = mskDate(new Date().toISOString())
   const tomorrow = nextDate(today)
   const inScope = (group: WorkGroup, selected: OverviewCard | null) => passesQueueFilter(toQueueGroup(group), { dates, today, tomorrow, airport, query, card: selected })
   const listed = useMemo(() => groups.filter((group) => inScope(group, null)), [airport, dates, groups, query, today, tomorrow])
   const visible = useMemo(() => listed.filter((group) => inScope(group, card)), [airport, card, dates, listed, query, today, tomorrow])
   const selected = groups.find((group) => group.key === selectedKey) ?? null
-  const needsBase = groups.some((group) => group.status === 'needs_baseline')
-  const latest = snapshots[0]
-  const mailInApp = integrations.some((item) => item.adapter === 'mail' && item.configured)
+  const latestSource = source?.latestSource === 'workbook' ? 'Excel' : source?.latestSource === 'sample' ? 'образец' : source?.latestSource
+  const mailInApp = source?.mailConfigured === true
   const reload = async () => {
     setRefreshing(true)
     await refresh()
@@ -71,7 +65,7 @@ export function OverviewPage() {
         </div>
       </div>
       <div className={`${cardClass} flex flex-wrap gap-6 text-sm`}>
-        <span>Источник: {latest?.source ?? 'нет данных'}</span>
+        <span>Источник: {latestSource ?? 'нет данных'}</span>
         <span className="tabular-nums">Последний снимок: {source?.lastSuccessAt ? formatMsk(source.lastSuccessAt) : 'нет'}</span>
         <span>Почта: {mailInApp ? 'отправка в интерфейсе' : 'передача в клиент'}</span>
       </div>
@@ -80,14 +74,6 @@ export function OverviewPage() {
           {sourceProblemText(source.problem)}. Данные от {source.lastSuccessAt ? formatMsk(source.lastSuccessAt) : 'последнего снимка'} сохранены.
           <span className="ml-3">
             <Button tone="ghost" disabled={busy === 'import'} onClick={openWorkbook}>Загрузить свежий Excel</Button>
-          </span>
-        </Banner>
-      ) : null}
-      {needsBase ? (
-        <Banner tone="info">
-          Сначала выберите исходное состояние.
-          <span className="ml-3">
-            <Button disabled={busy === 'baseline'} onClick={() => setBaseOpen(true)}>Исходная рассылка уже выполнена</Button>
           </span>
         </Banner>
       ) : null}
@@ -138,7 +124,7 @@ export function OverviewPage() {
                 </tr>
               </thead>
               <tbody>
-                {visible.map((group) => (
+                {(visible.length > 100 ? visible.slice(0, rowWindow) : visible).map((group) => (
                   <tr
                     key={group.key}
                     tabIndex={0}
@@ -154,8 +140,8 @@ export function OverviewPage() {
                     </td>
                     <td className="tabular-nums" title={`${group.hotel.timezone} ${group.hotel.utcOffset}`}>{formatStay(group.localStayDate)}</td>
                     <td>{group.changes.length ? summarizeChanges(group.changes.map((change) => change.kind)) : '—'}</td>
-                    <td className="tabular-nums">{group.lastChangeAt ? `${formatMsk(group.lastChangeAt)} · ${ageLabel(group.lastChangeAt, nowIso)}` : '—'}</td>
-                    <td>{group.revision ? `черновик v${group.revision}` : group.dueAt ? quietLabel(group.dueAt, nowIso) : '—'}</td>
+                    <AgeCell at={group.lastChangeAt} />
+                    <QuietCell dueAt={group.dueAt} revision={group.revision} />
                     <td><Badge tone={group.status}>{STATUS_LABEL[group.status]}</Badge></td>
                     <td>
                       <button
@@ -163,7 +149,7 @@ export function OverviewPage() {
                         className="min-h-11 font-semibold text-brand-strong"
                         onClick={(event) => {
                           event.stopPropagation()
-                          openAction(group, nowIso, { navigate, openMail, prepare: (key) => void prepareGroup(key), select: setSelectedKey, chooseBase: () => setBaseOpen(true) })
+                          openAction(group, new Date().toISOString(), { navigate, openMail, prepare: (key) => void prepareGroup(key), select: setSelectedKey })
                         }}
                       >
                         {actionLabel(group)}
@@ -173,6 +159,7 @@ export function OverviewPage() {
                 ))}
               </tbody>
             </table>
+            {visible.length > rowWindow ? <button type="button" className="mt-3 min-h-11 text-sm font-semibold text-brand-strong" onClick={() => setRowWindow((count) => count + 100)}>Ещё {visible.length - rowWindow}</button> : null}
           </div>
         )}
       </section>
@@ -195,11 +182,10 @@ export function OverviewPage() {
         <section className={cardClass}>
           <h2 className="mb-3 text-lg font-bold">Источник</h2>
           <p className="text-sm">
-            {latest?.windowFrom && latest.windowTo ? `Окно ${formatStay(latest.windowFrom)} — ${formatStay(latest.windowTo)} · ` : ''}записей {latest?.rowCount ?? 0}
+            {source?.windowFrom && source.windowTo ? `Окно ${formatStay(source.windowFrom)} — ${formatStay(source.windowTo)} · ` : ''}записей {source?.rowCount ?? 0}
           </p>
           <p className="mt-2 text-sm tabular-nums">Успех: {source?.lastSuccessAt ? formatMsk(source.lastSuccessAt) : 'нет'}</p>
           <p className="text-sm">Ошибка: {source?.lastErrorCode ?? 'нет'}</p>
-          <p className="mt-2 text-sm">База: {groups.length === 0 ? 'нет данных' : needsBase ? 'не выбрана' : 'зафиксирована'}</p>
           <button type="button" className="mt-3 min-h-11 text-sm font-semibold text-brand-strong" onClick={() => navigate('/history?tab=snapshots')}>
             История снимков
           </button>
@@ -209,8 +195,7 @@ export function OverviewPage() {
         {selected ? (
           <GroupBody
             group={selected}
-            hasDraft={Boolean(letters[selected.key])}
-            nowIso={nowIso}
+            hasDraft={Boolean(selected.draftId)}
             preparing={busy === 'prepare'}
             onMail={() => openMail(selected)}
             onHistory={() => navigate(`/history?hotel=${selected.hotel.id}&date=${selected.localStayDate}`)}
@@ -218,7 +203,6 @@ export function OverviewPage() {
           />
         ) : null}
       </Drawer>
-      <BaselineDialog key={baseOpen ? 'open' : 'closed'} open={baseOpen} count={groups.filter((group) => group.status === 'needs_baseline').length} onClose={() => setBaseOpen(false)} onConfirm={(evidence) => { setBaseOpen(false); void establishBaseline(evidence) }} />
     </div>
   )
 }
@@ -235,17 +219,14 @@ function toQueueGroup(group: WorkGroup): QueueFilterGroup {
   }
 }
 
-function BaselineDialog({ open, count, onClose, onConfirm }: { open: boolean; count: number; onClose: () => void; onConfirm: (evidence: string) => void }) {
-  const [evidence, setEvidence] = useState('')
-  const ready = evidence.trim().length >= 3
-  return (
-    <Dialog open={open} title="Исходное состояние" onClose={onClose} footer={<Button disabled={!ready} onClick={() => onConfirm(evidence.trim())}>Зафиксировать · {count}</Button>}>
-      <label className="block text-sm font-semibold">
-        Основание
-        <textarea value={evidence} onChange={(event) => setEvidence(event.target.value)} className="mt-2 min-h-16 w-full rounded-xl bg-muted p-3 font-normal" />
-      </label>
-    </Dialog>
-  )
+function AgeCell({ at }: { at: string | null }) {
+  const nowIso = useWorkplace((state) => state.nowIso)
+  return <td className="tabular-nums">{at ? `${formatMsk(at)} · ${ageLabel(at, nowIso)}` : '—'}</td>
+}
+
+function QuietCell({ dueAt, revision }: { dueAt: string | null; revision: number | null }) {
+  const nowIso = useWorkplace((state) => state.nowIso)
+  return <td>{revision ? `черновик v${revision}` : dueAt ? quietLabel(dueAt, nowIso) : '—'}</td>
 }
 
 function quietLabel(dueAt: string, nowIso: string): string {
@@ -273,7 +254,6 @@ function actionLabel(group: WorkGroup): string {
   if (group.status === 'stale') return 'Обновить черновик'
   if (group.status === 'needs_decision') return needsRecipient(group) ? 'Настроить получателя' : 'Разобрать'
   if (group.status === 'waiting') return 'Посмотреть изменения'
-  if (group.status === 'needs_baseline') return 'Задать отправную'
   return 'Посмотреть'
 }
 
@@ -282,16 +262,11 @@ interface ActionHandlers {
   openMail: (group: WorkGroup) => void
   prepare: (key: string) => void
   select: (key: string) => void
-  chooseBase: () => void
 }
 
 function openAction(group: WorkGroup, nowIso: string, handlers: ActionHandlers) {
   if (group.status === 'needs_review' || group.status === 'reviewed' || group.status === 'handed_off' || group.status === 'stale') {
     handlers.openMail(group)
-    return
-  }
-  if (group.status === 'needs_baseline') {
-    handlers.chooseBase()
     return
   }
   if (group.status === 'needs_decision' && needsRecipient(group)) {
@@ -302,7 +277,8 @@ function openAction(group: WorkGroup, nowIso: string, handlers: ActionHandlers) 
   handlers.select(group.key)
 }
 
-function GroupBody({ group, hasDraft, nowIso, preparing, onMail, onHistory, onPrepare }: { group: WorkGroup; hasDraft: boolean; nowIso: string; preparing: boolean; onMail: () => void; onHistory: () => void; onPrepare: () => void }) {
+function GroupBody({ group, hasDraft, preparing, onMail, onHistory, onPrepare }: { group: WorkGroup; hasDraft: boolean; preparing: boolean; onMail: () => void; onHistory: () => void; onPrepare: () => void }) {
+  const nowIso = useWorkplace((state) => state.nowIso)
   const canPrepare = group.changes.length > 0 && !group.exceptions.some((item) => item.blocking)
   return (
     <div className="flex flex-col gap-4 text-sm">

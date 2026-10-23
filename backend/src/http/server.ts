@@ -7,19 +7,42 @@ import { buildCsv } from '../domain/csv.ts'
 import { writeAudit } from '../services/audit.ts'
 import { normalizeAviabitTable, ImportSchemaError } from '../domain/aviabit.ts'
 import { diffBookings, type CanonicalBooking } from '../domain/diff.ts'
-import { readFirstSheet, XlsxLimitError } from '../domain/xlsx.ts'
+import { readFirstSheetAsync, XlsxLimitError } from '../domain/xlsx.ts'
 import { HttpError } from '../errors.ts'
 import { assertRuntimeRole, createPool, withTransaction } from '../db/pool.ts'
 import { runImportedRows, runSampleCheck } from '../services/ingest.ts'
 import { loadDraftView, patchDraft, prepareGroup, rebuildDraft, reviewDraft } from '../services/drafts.ts'
 import { beginSend, confirmExternal, establishBaseline, finishSend, handoffDraft } from '../services/delivery.ts'
 import { createHotel, holdException, patchHotel, patchSettings, publishTemplate, recordAcceptedImport, recordRejectedImport, resolveException } from '../services/directory.ts'
-import { loadState, projectGroups, sourceProblem, type Actor } from '../services/state.ts'
+import { readOverviewCounts, readQueueGroup, readQueuePage, readSourceFacts } from '../services/queueView.ts'
+import { type Actor } from '../services/state.ts'
 import { runScheduler } from '../services/scheduler.ts'
 import { AuthBusyError, warmPasswordCheck } from '../domain/password.ts'
 import { actorFromSession, clearedSessionCookie, loginWithPassword, logoutSession, readSessionToken, sessionCookie } from '../services/session.ts'
 
 const hits = new Map<string, number[]>()
+let importPause: Promise<void> | null = null
+let importPaused = false
+
+export function pauseNextImport(gate: Promise<void>): void {
+  importPause = gate
+}
+
+export function importPauseWaiting(): boolean {
+  return importPaused
+}
+
+async function waitForImportPause(): Promise<void> {
+  const gate = importPause
+  if (!gate) return
+  importPause = null
+  importPaused = true
+  try {
+    await gate
+  } finally {
+    importPaused = false
+  }
+}
 
 export interface RunningServer {
   url: string
@@ -89,16 +112,87 @@ async function handle(req: IncomingMessage, res: ServerResponse, pool: Pool, con
       await handleCredential(req, res, pool, config, params.route, correlationId)
       return
     }
+    if (params.route === 'imports') {
+      await handleImport(req, res, pool, config, correlationId)
+      return
+    }
     const reply = deferredReply()
-    await withTransaction(pool, async (client) => {
-      const actor = await authenticate(req, config, client)
+    if ((req.method === 'GET' || req.method === 'HEAD') && params.route !== 'audit-export') {
+      const actor = await authenticate(req, config, pool)
       if (!actor) throw new HttpError(401, 'UNAUTHENTICATED', 'Нет сессии')
-      await dispatch(req, reply, url, params, actor, client, config, correlationId)
-    })
+      await dispatch(req, reply, url, params, actor, pool as unknown as Parameters<Parameters<typeof withTransaction>[1]>[0], config, correlationId)
+    } else {
+      await withTransaction(pool, async (client) => {
+        const actor = await authenticate(req, config, client)
+        if (!actor) throw new HttpError(401, 'UNAUTHENTICATED', 'Нет сессии')
+        await dispatch(req, reply, url, params, actor, client, config, correlationId)
+      })
+    }
     reply.flush(res)
   } catch (error) {
     sendError(res, error, correlationId)
   }
+}
+
+async function handleImport(req: IncomingMessage, res: ServerResponse, pool: Pool, config: AppConfig, correlationId: string): Promise<void> {
+  if (config.authMode === 'password') assertCrewHeader(req)
+  const actor = await withTransaction(pool, async (client) => authenticate(req, config, client))
+  if (!actor) throw new HttpError(401, 'UNAUTHENTICATED', 'Нет сессии')
+  requireRole(actor, ['specialist', 'lead'])
+  const now = config.now()
+  const filename = decodedFilename(headerOne(req, 'x-filename'))
+  const bytes = await readRaw(req, config.importLimitBytes)
+  let normalized: ReturnType<typeof normalizeAviabitTable> | null = null
+  let limitExceeded = false
+  let schemaRejected = false
+  try {
+    const table = await readFirstSheetAsync(bytes)
+    try {
+      normalized = normalizeAviabitTable(table)
+    } catch (error) {
+      if (!(error instanceof ImportSchemaError)) throw error
+      schemaRejected = true
+    }
+    if (normalized && normalized.length === 0) schemaRejected = true
+  } catch (error) {
+    if (!(error instanceof XlsxLimitError)) throw error
+    limitExceeded = true
+  }
+  await waitForImportPause()
+  if (limitExceeded || schemaRejected || !normalized) {
+    const importId = await withTransaction(pool, async (client) => recordRejectedImport(client, actor, now, correlationId, { filename, bytes }))
+    const status = limitExceeded ? 422 : 503
+    const code = limitExceeded ? 'IMPORT_LIMIT_EXCEEDED' : 'SOURCE_SCHEMA_UNVERIFIED'
+    const message = limitExceeded ? 'Файл превышает лимит разбора' : 'Формат выгрузки не утверждён'
+    send(res, status, { error: { code, message, details: { importId }, correlationId } }, correlationId)
+    return
+  }
+  const rows = normalized.map((row) => ({
+    sourceBookingId: row.sourceBookingId,
+    sourceCrewId: row.sourceCrewId,
+    sourceHotelId: row.sourceHotelId,
+    airportCode: row.airportCode,
+    stayDate: row.localStayDate ?? (row.arrivalLocalDate || null),
+    fullName: row.fullNameSource,
+    position: row.position,
+    gender: row.gender,
+    arrivalFlight: row.arrivalFlight,
+    arrivalLocalDate: row.arrivalLocalDate,
+    arrivalLocalTime: row.arrivalLocalTime,
+    departureFlight: row.departureFlight,
+    departureLocalDate: row.departureLocalDate,
+    departureLocalTime: row.departureLocalTime,
+    roomType: row.roomType,
+    recordStatus: 'active' as const,
+    replacementOf: null,
+  }))
+  const result = await withTransaction(pool, async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(8412001)')
+    const imported = await runImportedRows(client, { filename, actor, now, correlationId, rows })
+    const importId = imported.snapshotId ? await recordAcceptedImport(client, actor, now, correlationId, { filename, bytes, snapshotId: imported.snapshotId, rowCount: normalized.length }) : null
+    return { ...imported, importId, rowCount: normalized.length }
+  })
+  send(res, 202, result, correlationId)
 }
 
 interface Reply {
@@ -138,47 +232,39 @@ async function dispatch(
   const route = params.route
   if (config.authMode === 'password' && req.method !== 'GET' && req.method !== 'HEAD') assertCrewHeader(req)
   if (route === 'me') return send(res, 200, profile(actor), correlationId)
+  if (route === 'revision') {
+    const row = await client.query<{ data_generation: string }>('SELECT data_generation FROM app_settings WHERE id = 1')
+    return send(res, 200, { generation: Number(row.rows[0]?.data_generation ?? 0) }, correlationId)
+  }
   if (route === 'overview') {
-    const state = await loadState(client)
-    const groups = projectGroups(state, now, 'baseline')
-    const counts: Record<string, number> = {}
-    for (const group of groups) counts[group.status] = (counts[group.status] ?? 0) + 1
-    const events = await client.query<{ occurred_at: string; action: string; result: string }>(
-      'SELECT occurred_at, action, result FROM audit_events ORDER BY occurred_at DESC LIMIT 8',
+    const counts = await readOverviewCounts(client, now)
+    const events = await client.query(
+      `SELECT a.id, a.occurred_at, a.action, a.entity_type, a.result, a.group_key, a.service_actor, a.safe_details, u.display_name
+       FROM audit_events a LEFT JOIN app_users u ON u.id = a.actor_user_id ORDER BY a.occurred_at DESC LIMIT 8`,
     )
-    return send(res, 200, { counts, source: sourceView(state, now, config), recentEvents: events.rows }, correlationId)
+    const head = await client.query<{ source: string; window_from: string | null; window_to: string | null; row_count: number }>(
+      'SELECT source, window_from::text, window_to::text, row_count FROM snapshots ORDER BY fetched_at DESC, seq DESC LIMIT 1',
+    )
+    return send(res, 200, { counts, source: { ...(await sourceView(client, now, config)), ...snapshotSummary(head.rows[0]), mailConfigured: config.mailAdapter !== 'disabled' }, recentEvents: events.rows }, correlationId)
   }
   if (route === 'groups') {
-    const state = await loadState(client)
-    let groups = projectGroups(state, now, 'baseline')
-    const status = url.searchParams.get('status')
-    const airport = url.searchParams.get('airport')
-    const date = url.searchParams.get('date')
-    const hotel = url.searchParams.get('hotel')
-    const query = (url.searchParams.get('query') ?? '').toLowerCase()
-    if (status) groups = groups.filter((group) => group.status === status)
-    if (airport) groups = groups.filter((group) => group.airportCode === airport.toUpperCase())
-    if (date) groups = groups.filter((group) => group.stayDate === date)
-    if (hotel) groups = groups.filter((group) => group.hotel?.id === hotel)
-    if (query) groups = groups.filter((group) => `${group.hotel?.name ?? ''} ${group.airportCode}`.toLowerCase().includes(query))
-    return send(res, 200, page(groups.map(publicGroup), url), correlationId)
+    const listed = await readQueuePage(client, now, queueFilter(url, 'baseline', false))
+    return send(res, 200, queuePage(listed, url), correlationId)
   }
   if (route === 'group') {
-    const state = await loadState(client)
-    const group = projectGroups(state, now, 'baseline').find((item) => item.id === params.id)
+    const group = await readQueueGroup(client, params.id ?? '')
     if (!group) throw new HttpError(404, 'GROUP_NOT_FOUND', 'Группа не найдена')
-    return send(res, 200, publicGroup(group), correlationId)
+    return send(res, 200, group, correlationId)
   }
   if (route === 'corrections') {
     const basis = url.searchParams.get('basis') === 'previous' ? 'previous' : 'baseline'
-    const state = await loadState(client)
-    const groups = projectGroups(state, now, basis).filter((group) => basis === 'previous' || group.baselineBookings !== null || group.changeCount > 0 || group.status === 'needs_baseline')
-    return send(res, 200, { basis, items: groups.map(publicGroup), nextCursor: null }, correlationId)
+    const listed = await readQueuePage(client, now, queueFilter(url, basis, true))
+    return send(res, 200, { basis, ...queuePage(listed, url) }, correlationId)
   }
   if (route === 'snapshots') {
     const rows = await client.query(
       `SELECT s.id, s.seq, s.source, s.series_id, s.fetched_at, s.window_from, s.window_to, s.validation_status, s.completeness, s.hash,
-              jsonb_array_length(s.validation_issues) AS issue_count, (SELECT count(*)::int FROM snapshot_bookings b WHERE b.snapshot_id = s.id) AS row_count
+              jsonb_array_length(s.validation_issues) AS issue_count, s.row_count
        FROM snapshots s ORDER BY s.fetched_at DESC, s.seq DESC LIMIT 100`,
     )
     return send(res, 200, { items: rows.rows, nextCursor: null }, correlationId)
@@ -199,8 +285,7 @@ async function dispatch(
     return send(res, 200, { leftId, rightId, events: diff.ambiguous ? [] : diff.events, ambiguous: diff.ambiguous, unresolvedAbsences: diff.unresolvedAbsences, changed: beforeCount.rows[0]?.count !== afterCount.rows[0]?.count }, correlationId)
   }
   if (route === 'source-status') {
-    const state = await loadState(client)
-    return send(res, 200, sourceView(state, now, config), correlationId)
+    return send(res, 200, await sourceView(client, now, config), correlationId)
   }
   if (route === 'source-check') {
     requireRole(actor, ['specialist', 'lead'])
@@ -210,59 +295,6 @@ async function dispatch(
     await client.query('SELECT pg_advisory_xact_lock(8412001)')
     const result = await runSampleCheck(client, { fixtureName: fixture, trigger: 'manual', actor, now, correlationId })
     return send(res, 202, result, correlationId)
-  }
-  if (route === 'imports') {
-    requireRole(actor, ['specialist', 'lead'])
-    const filename = decodedFilename(headerOne(req, 'x-filename'))
-    const bytes = await readRaw(req, config.importLimitBytes)
-    let table: ReturnType<typeof readFirstSheet>
-    try {
-      table = readFirstSheet(bytes)
-    } catch (error) {
-      if (!(error instanceof XlsxLimitError)) throw error
-      const importId = await recordRejectedImport(client, actor, now, correlationId, { filename, bytes })
-      return send(res, 422, { error: { code: 'IMPORT_LIMIT_EXCEEDED', message: 'Файл превышает лимит разбора', details: { importId }, correlationId } }, correlationId)
-    }
-    let normalized: ReturnType<typeof normalizeAviabitTable>
-    try {
-      normalized = normalizeAviabitTable(table)
-    } catch (error) {
-      if (!(error instanceof ImportSchemaError)) throw error
-      const importId = await recordRejectedImport(client, actor, now, correlationId, { filename, bytes })
-      return send(res, 503, { error: { code: 'SOURCE_SCHEMA_UNVERIFIED', message: 'Формат выгрузки не утверждён', details: { importId }, correlationId } }, correlationId)
-    }
-    if (normalized.length === 0) {
-      const importId = await recordRejectedImport(client, actor, now, correlationId, { filename, bytes })
-      return send(res, 503, { error: { code: 'SOURCE_SCHEMA_UNVERIFIED', message: 'Формат выгрузки не утверждён', details: { importId }, correlationId } }, correlationId)
-    }
-    await client.query('SELECT pg_advisory_xact_lock(8412001)')
-    const result = await runImportedRows(client, {
-      filename,
-      actor,
-      now,
-      correlationId,
-      rows: normalized.map((row) => ({
-        sourceBookingId: row.sourceBookingId,
-        sourceCrewId: row.sourceCrewId,
-        sourceHotelId: row.sourceHotelId,
-        airportCode: row.airportCode,
-        stayDate: row.localStayDate ?? (row.arrivalLocalDate || null),
-        fullName: row.fullNameSource,
-        position: row.position,
-        gender: row.gender,
-        arrivalFlight: row.arrivalFlight,
-        arrivalLocalDate: row.arrivalLocalDate,
-        arrivalLocalTime: row.arrivalLocalTime,
-        departureFlight: row.departureFlight,
-        departureLocalDate: row.departureLocalDate,
-        departureLocalTime: row.departureLocalTime,
-        roomType: row.roomType,
-        recordStatus: 'active',
-        replacementOf: null,
-      })),
-    })
-    const importId = result.snapshotId ? await recordAcceptedImport(client, actor, now, correlationId, { filename, bytes, snapshotId: result.snapshotId, rowCount: normalized.length }) : null
-    return send(res, 202, { ...result, importId, rowCount: normalized.length }, correlationId)
   }
   if (route === 'import') {
     const row = await client.query('SELECT id, filename_sanitized, status, sha256, size_bytes, error_report_safe, result_snapshot_id, unresolved_identity_count, unresolved_hotel_count FROM import_batches WHERE id = $1', [params.id])
@@ -369,7 +401,7 @@ async function dispatch(
   }
   if (route === 'notifications') {
     const rows = await client.query(
-      `SELECT n.id, n.group_key, n.transport_status, n.sent_at, n.external_confirmation_at, n.created_at, v.revision, n.archived_payload -> 'letter' AS letter
+      `SELECT n.id, n.group_key, n.transport_status, n.sent_at, n.external_confirmation_at, n.created_at, v.revision, v.rendered_subject AS subject
        FROM notifications n JOIN draft_versions v ON v.id = n.draft_version_id ORDER BY n.created_at DESC LIMIT 100`,
     )
     return send(res, 200, { items: rows.rows, nextCursor: null }, correlationId)
@@ -515,6 +547,7 @@ function matchRoute(method: string, pathname: string): Record<string, string> | 
     ['POST', '/api/v1/session/logout', 'logout'],
     ['POST', '/api/v1/session', 'login'],
     ['GET', '/api/v1/me', 'me'],
+    ['GET', '/api/v1/revision', 'revision'],
     ['GET', '/api/v1/overview', 'overview'],
     ['GET', '/api/v1/groups', 'groups'],
     ['GET', '/api/v1/groups/:id', 'group'],
@@ -566,7 +599,7 @@ function matchRoute(method: string, pathname: string): Record<string, string> | 
   return null
 }
 
-async function authenticate(req: IncomingMessage, config: AppConfig, client: Parameters<Parameters<typeof withTransaction>[1]>[0]): Promise<Actor | null> {
+async function authenticate(req: IncomingMessage, config: AppConfig, client: Pool | Parameters<Parameters<typeof withTransaction>[1]>[0]): Promise<Actor | null> {
   if (config.authMode === 'disabled') throw new HttpError(401, 'AUTH_NOT_CONFIGURED', 'Корпоративный вход не настроен')
   if (config.authMode === 'password') {
     const token = readSessionToken(headerOne(req, 'cookie'))
@@ -597,38 +630,46 @@ function permissions(role: Actor['role']): string[] {
   return []
 }
 
-function sourceView(state: Awaited<ReturnType<typeof loadState>>, now: Date, config: AppConfig) {
+function snapshotSummary(row: { source: string; window_from: string | null; window_to: string | null; row_count: number } | undefined) {
   return {
-    adapter: config.sourceAdapter,
-    lastStatus: state.lastRunStatus,
-    lastSuccessAt: state.lastSuccessAt,
-    lastErrorCode: state.lastErrorCode,
-    problem: sourceProblem(state, now),
-    latestSnapshotId: state.latest?.id ?? null,
-    validationStatus: state.latest?.validationStatus ?? null,
+    latestSource: row?.source ?? null,
+    windowFrom: row?.window_from ?? null,
+    windowTo: row?.window_to ?? null,
+    rowCount: Number(row?.row_count ?? 0),
   }
 }
 
-function publicGroup(group: ReturnType<typeof projectGroups>[number]) {
+async function sourceView(client: Parameters<Parameters<typeof withTransaction>[1]>[0], now: Date, config: AppConfig) {
+  const facts = await readSourceFacts(client, now)
   return {
-    id: group.id,
-    groupKey: group.groupKey,
-    hotel: group.hotel,
-    airportCode: group.airportCode,
-    stayDate: group.stayDate,
-    status: group.status,
-    changeCount: group.changeCount,
-    changes: group.changes,
-    lastMeaningfulChangeAt: group.lastMeaningfulChangeAt,
-    dueAt: group.dueAt,
-    draftId: group.draftId,
-    draftStatus: group.draftStatus,
-    revision: group.revision,
-    version: group.version,
-    exceptions: group.exceptions,
-    latestBookings: group.latestBookings,
-    baselineBookings: group.baselineBookings,
+    adapter: config.sourceAdapter,
+    lastStatus: facts.adapterReady.lastRunStatus,
+    lastSuccessAt: facts.adapterReady.lastSuccessAt,
+    lastErrorCode: facts.lastErrorCode,
+    problem: facts.problem,
+    latestSnapshotId: facts.latestSnapshotId,
+    validationStatus: facts.validationStatus,
   }
+}
+
+function queueFilter(url: URL, basis: 'baseline' | 'previous', corrections: boolean) {
+  const paging = pageParams(url)
+  return {
+    basis,
+    corrections,
+    limit: paging.limit,
+    offset: paging.offset,
+    status: url.searchParams.get('status'),
+    airport: url.searchParams.get('airport'),
+    date: url.searchParams.get('date'),
+    hotel: url.searchParams.get('hotel'),
+    query: url.searchParams.get('query'),
+  }
+}
+
+function queuePage(listed: { items: unknown[]; total: number }, url: URL): { items: unknown[]; nextCursor: string | null } {
+  const { offset } = pageParams(url)
+  return { items: listed.items, nextCursor: offset + listed.items.length < listed.total ? String(offset + listed.items.length) : null }
 }
 
 async function loadPair(client: Parameters<Parameters<typeof withTransaction>[1]>[0], leftId: string, rightId: string): Promise<{ left: CanonicalBooking[]; right: CanonicalBooking[]; completeness: 'full' | 'unknown' }> {
@@ -666,12 +707,6 @@ async function loadPair(client: Parameters<Parameters<typeof withTransaction>[1]
     right: rows.rows.filter((row) => row.snapshot_id === rightId).map((row) => mapRow(row as Record<string, unknown>)),
     completeness: leftCompleteness === 'full' && rightCompleteness === 'full' ? 'full' : 'unknown',
   }
-}
-
-function page<T>(items: T[], url: URL): { items: T[]; nextCursor: string | null } {
-  const { limit, offset } = pageParams(url)
-  const slice = items.slice(offset, offset + limit)
-  return { items: slice, nextCursor: offset + slice.length < items.length ? String(offset + slice.length) : null }
 }
 
 function pageParams(url: URL): { limit: number; offset: number } {

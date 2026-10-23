@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { Suspense, useEffect, useState } from 'react'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { sourceProblemText } from '../domain/labels'
 import { formatMsk } from '../domain/time'
 import { useSession } from '../state/useSession'
@@ -56,25 +56,43 @@ function SignIn({ error, onSignIn }: { error: string | null; onSignIn: (email: s
 
 function Workspace({ displayName, position, onLeave }: { displayName: string; position: string | null; onLeave: () => void }) {
   const source = useWorkplace((state) => state.source)
-  const integrations = useWorkplace((state) => state.integrations)
   const groups = useWorkplace((state) => state.groups)
-  const latestSource = useWorkplace((state) => state.snapshots[0]?.source)
+  const location = useLocation()
+  const latestSource = source?.latestSource === 'workbook' ? 'Excel' : source?.latestSource === 'sample' ? 'образец' : source?.latestSource
   const toasts = useWorkplace((state) => state.toasts)
   const dismissToast = useWorkplace((state) => state.dismissToast)
   const reviewCount = groups.filter((group) => group.status === 'needs_review').length
-  const mailInApp = integrations.some((item) => item.adapter === 'mail' && item.configured)
+  const mailInApp = source?.mailConfigured === true
   const sourceTone = source?.problem === 'SOURCE_UNAVAILABLE' ? 'error' : source?.problem ? 'waiting' : source?.lastSuccessAt ? 'ok' : 'info'
   const sourceLabel = source?.problem ? sourceProblemText(source.problem).toLowerCase() : (latestSource ?? 'нет данных')
 
   useEffect(() => {
-    const { tick, refresh } = useWorkplace.getState()
-    const ticker = window.setInterval(tick, TICK_MS)
-    const poller = window.setInterval(() => {
-      if (document.visibilityState === 'visible') void refresh()
-    }, REFRESH_MS)
-    return () => {
+    void useWorkplace.getState().refresh()
+  }, [location.pathname])
+  useEffect(() => {
+    let ticker = 0
+    let poller = 0
+    const stop = () => {
       window.clearInterval(ticker)
       window.clearInterval(poller)
+      ticker = 0
+      poller = 0
+    }
+    const start = () => {
+      if (ticker) return
+      const { tick, refresh } = useWorkplace.getState()
+      ticker = window.setInterval(tick, TICK_MS)
+      poller = window.setInterval(() => void refresh(), REFRESH_MS)
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') start()
+      else stop()
+    }
+    onVisibility()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [])
 
@@ -119,7 +137,9 @@ function Workspace({ displayName, position, onLeave }: { displayName: string; po
           </div>
         </aside>
         <main className="min-w-0 px-4 pb-24 pt-6 md:px-6">
-          <Outlet />
+          <Suspense fallback={<p className="text-sm text-ink-soft">Загрузка…</p>}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
       <nav className="fixed inset-x-0 bottom-0 z-20 flex border-t border-line bg-white md:hidden" aria-label="Разделы">

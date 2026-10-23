@@ -20,6 +20,7 @@ export function CorrectionsPage() {
   const [flat, setFlat] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [selectedKey, setSelectedKey] = useState<string | null>(params.get('group'))
+  const [rowWindow, setRowWindow] = useState(100)
   const [previousGroups, setPreviousGroups] = useState<WorkGroup[] | null>(null)
   useEffect(() => {
     if (basis !== 'previous' || !loaded) return
@@ -34,8 +35,7 @@ export function CorrectionsPage() {
     }
   }, [basis, fetchCorrections, loaded, pushToast, snapshots])
   const source = useMemo(() => (basis === 'previous' ? (previousGroups ?? []) : queue), [basis, previousGroups, queue])
-  const groups = useMemo(() => source.filter((group) => group.changes.length > 0 || group.status === 'needs_baseline'), [source])
-  const needsBase = queue.some((group) => group.status === 'needs_baseline')
+  const groups = useMemo(() => source.filter((group) => group.changes.length > 0), [source])
   const [latest, previous] = snapshots
   const visible = groups.filter((group) => {
     if (airport !== 'all' && group.airportCode !== airport) return false
@@ -45,9 +45,10 @@ export function CorrectionsPage() {
   })
   const groupByKey = new Map(source.map((group) => [group.groupKey, group]))
   const selected = queue.find((group) => group.key === selectedKey) ?? source.find((group) => group.key === selectedKey) ?? null
+  const shownGroups = visible.length > 100 ? visible.slice(0, rowWindow) : visible
   const blocks = flat
-    ? [{ key: 'flat', changes: visible.flatMap((group) => group.changes), group: null }]
-    : visible.map((group) => ({ key: group.key, changes: group.changes, group }))
+    ? [{ key: 'flat', changes: shownGroups.flatMap((group) => group.changes), group: null }]
+    : shownGroups.map((group) => ({ key: group.key, changes: group.changes, group }))
   if (!loaded) return <p className="text-sm text-ink-soft">Загрузка…</p>
   return (
     <div className="flex flex-col gap-5">
@@ -78,10 +79,7 @@ export function CorrectionsPage() {
         <Button tone="ghost" onClick={() => setFlat((value) => !value)}>{flat ? 'По гостиницам' : 'Список изменений'}</Button>
         <Button tone="ghost" onClick={() => setCollapsed((value) => !value)}>{collapsed ? 'Развернуть все' : 'Свернуть все'}</Button>
       </div>
-      {needsBase && basis === 'baseline' ? (
-        <EmptyState title="Нельзя определить корректировки. Сначала выберите исходное состояние." action={<Button onClick={() => navigate('/overview')}>Перейти к обзору</Button>} />
-      ) : null}
-      {visible.length === 0 && !(needsBase && basis === 'baseline') ? (
+      {visible.length === 0 ? (
         <EmptyState title={snapshots.length === 0 ? 'Данных ещё нет' : 'Различий нет'} action={<Button onClick={() => navigate('/overview')}>Загрузить Excel</Button>} />
       ) : null}
       <div className="flex flex-col gap-4">
@@ -101,7 +99,7 @@ export function CorrectionsPage() {
                 <table className="w-full min-w-[760px] text-left text-sm">
                   <thead className="text-xs text-ink-soft"><tr><th>ФИО</th>{flat ? <th>Гостиница</th> : null}<th>Тип</th><th>Было</th><th>Стало</th><th>Обнаружено</th></tr></thead>
                   <tbody>
-                    {block.changes.map((change) => {
+                    {(block.changes.length > 100 ? block.changes.slice(0, rowWindow) : block.changes).map((change) => {
                       const owner = groupByKey.get(change.groupKey)
                       return (
                         <tr key={change.id} className="border-t border-line align-top">
@@ -123,8 +121,10 @@ export function CorrectionsPage() {
                 </table>
               </div>
             ) : null}
+            {block.changes.length > rowWindow ? <button type="button" className="mt-3 min-h-11 text-sm font-semibold text-brand-strong" onClick={() => setRowWindow((count) => count + 100)}>Ещё {block.changes.length - rowWindow}</button> : null}
           </section>
         ))}
+        {visible.length > rowWindow ? <button type="button" className="min-h-11 text-sm font-semibold text-brand-strong" onClick={() => setRowWindow((count) => count + 100)}>Ещё {visible.length - rowWindow}</button> : null}
       </div>
       <Drawer open={Boolean(selected)} title={selected?.hotel.name ?? 'Группа'} width={560} onClose={() => setSelectedKey(null)}>
         {selected ? (

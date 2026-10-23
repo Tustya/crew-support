@@ -1,3 +1,4 @@
+import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads'
 import { inflateRawSync } from 'node:zlib'
 
 const MAX_ENTRIES = 64
@@ -135,4 +136,32 @@ function readU16(bytes: Buffer, offset: number): number {
 function readU32(bytes: Buffer, offset: number): number {
   if (offset < 0 || offset + 4 > bytes.length) throw new XlsxLimitError()
   return bytes.readUInt32LE(offset)
+}
+
+export function readFirstSheetAsync(bytes: Buffer): Promise<(string | number | null)[][]> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./xlsx.ts', import.meta.url), { workerData: bytes, execArgv: [] })
+    const finish = (error?: Error) => {
+      worker.removeAllListeners()
+      void worker.terminate()
+      if (error) reject(error)
+    }
+    worker.once('message', (message: { ok: boolean; rows?: (string | number | null)[][]; limit?: boolean }) => {
+      if (message.ok && message.rows) {
+        finish()
+        resolve(message.rows)
+        return
+      }
+      finish(message.limit ? new XlsxLimitError() : new Error('XLSX_PARSE'))
+    })
+    worker.once('error', (error) => finish(error))
+  })
+}
+
+if (!isMainThread && parentPort) {
+  try {
+    parentPort.postMessage({ ok: true, rows: readFirstSheet(Buffer.from(workerData as Uint8Array)) })
+  } catch (error) {
+    parentPort.postMessage({ ok: false, limit: error instanceof XlsxLimitError })
+  }
 }

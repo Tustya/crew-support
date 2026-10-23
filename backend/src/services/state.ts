@@ -172,6 +172,15 @@ export function recipientFingerprint(hotel: Pick<HotelRow, 'contractStatus' | 'a
   )
 }
 
+function storedGroupParts(groupKey: string): { hotelId: string | null; airportCode: string; stayDate: string } {
+  if (groupKey.startsWith('unresolved|')) {
+    const [, airportCode, stayDate] = groupKey.split('|')
+    return { hotelId: null, airportCode: airportCode ?? '', stayDate: stayDate ?? '' }
+  }
+  const [hotelId, airportCode, stayDate] = groupKey.split('|')
+  return { hotelId: hotelId || null, airportCode: airportCode ?? '', stayDate: stayDate ?? '' }
+}
+
 export function bookingGroupKey(booking: CanonicalBooking): string | null {
   if (!booking.stayDate) return null
   if (booking.hotelId) return `${booking.hotelId}|${booking.airportCode}|${booking.stayDate}`
@@ -218,7 +227,8 @@ function mapBooking(row: {
   }
 }
 
-export async function loadState(client: PoolClient): Promise<WorkState> {
+export async function loadState(client: PoolClient, focusGroupKey?: string): Promise<WorkState> {
+  const focus = focusGroupKey ? storedGroupParts(focusGroupKey) : null
   const settingsResult = await client.query<{
     poll_minutes: number
     quiet_minutes: number
@@ -251,7 +261,7 @@ export async function loadState(client: PoolClient): Promise<WorkState> {
      FROM snapshots ORDER BY fetched_at DESC, seq DESC LIMIT 1`,
   )
   const latestRow = latestResult.rows[0]
-  const previousResult = latestRow
+  const previousResult = latestRow && !focus
     ? await client.query<SnapshotQueryRow>(
         `SELECT id, seq, series_id, fetched_at, hash, validation_status, completeness, validation_issues
          FROM snapshots WHERE series_id = $1 AND seq < $2 ORDER BY seq DESC LIMIT 1`,
@@ -261,11 +271,17 @@ export async function loadState(client: PoolClient): Promise<WorkState> {
   const snapshotIds = [latestRow?.id, previousResult.rows[0]?.id].filter((id): id is string => Boolean(id))
   const bookingResult = snapshotIds.length
     ? await client.query<{ snapshot_id: string } & Parameters<typeof mapBooking>[0]>(
-        `SELECT snapshot_id, source_booking_id, source_crew_id, hotel_id, airport_code, stay_date, full_name, position, gender,
-                arrival_flight, arrival_local_date, arrival_local_time, departure_flight, departure_local_date, departure_local_time,
-                room_type, record_status, replacement_of
-         FROM snapshot_bookings WHERE snapshot_id = ANY($1::uuid[])`,
-        [snapshotIds],
+        focus
+          ? `SELECT snapshot_id, source_booking_id, source_crew_id, hotel_id, airport_code, stay_date, full_name, position, gender,
+                    arrival_flight, arrival_local_date, arrival_local_time, departure_flight, departure_local_date, departure_local_time,
+                    room_type, record_status, replacement_of
+             FROM snapshot_bookings
+             WHERE snapshot_id = $1 AND btrim(airport_code) = $2 AND stay_date = $3::date AND hotel_id IS NOT DISTINCT FROM $4::uuid`
+          : `SELECT snapshot_id, source_booking_id, source_crew_id, hotel_id, airport_code, stay_date, full_name, position, gender,
+                    arrival_flight, arrival_local_date, arrival_local_time, departure_flight, departure_local_date, departure_local_time,
+                    room_type, record_status, replacement_of
+             FROM snapshot_bookings WHERE snapshot_id = ANY($1::uuid[])`,
+        focus ? [latestRow?.id, focus.airportCode, focus.stayDate, focus.hotelId] : [snapshotIds],
       )
     : { rows: [] }
   const bookings = new Map<string, CanonicalBooking[]>()
@@ -275,8 +291,12 @@ export async function loadState(client: PoolClient): Promise<WorkState> {
     bookings.set(row.snapshot_id, list)
   }
   const baselineResult = await client.query<{ group_key: string; payload: StoredPayload; revision_no: number; source_snapshot_id: string | null }>(
-    `SELECT DISTINCT ON (group_key) group_key, payload, revision_no, source_snapshot_id
-     FROM notification_baselines ORDER BY group_key, revision_no DESC`,
+    focus
+      ? `SELECT group_key, payload, revision_no, source_snapshot_id
+         FROM notification_baselines WHERE group_key = $1 ORDER BY revision_no DESC LIMIT 1`
+      : `SELECT DISTINCT ON (group_key) group_key, payload, revision_no, source_snapshot_id
+         FROM notification_baselines ORDER BY group_key, revision_no DESC`,
+    focus ? [focusGroupKey] : [],
   )
   const groupResult = await client.query<{
     id: string
@@ -288,7 +308,12 @@ export async function loadState(client: PoolClient): Promise<WorkState> {
     due_at: string | null
     row_version: number
     last_fingerprint: string | null
-  }>('SELECT id, group_key, hotel_id, airport_code, stay_date, last_change_at, due_at, row_version, last_fingerprint FROM work_groups')
+  }>(
+    focus
+      ? 'SELECT id, group_key, hotel_id, airport_code, stay_date, last_change_at, due_at, row_version, last_fingerprint FROM work_groups WHERE group_key = $1'
+      : 'SELECT id, group_key, hotel_id, airport_code, stay_date, last_change_at, due_at, row_version, last_fingerprint FROM work_groups',
+    focus ? [focusGroupKey] : [],
+  )
   const draftResult = await client.query<{
     id: string
     group_key: string
@@ -313,10 +338,13 @@ export async function loadState(client: PoolClient): Promise<WorkState> {
             v.rendered_subject, v.rendered_content, v.recipient_to, v.recipient_cc, v.reviewed_at, v.reviewed_fingerprint
      FROM drafts d
      JOIN draft_versions v ON v.draft_id = d.id AND v.revision = d.current_revision
+     ${focus ? 'WHERE d.group_key = $1' : ''}
      ORDER BY d.created_at DESC`,
+    focus ? [focusGroupKey] : [],
   )
   const exceptionResult = await client.query<ExceptionRow & { group_key: string | null }>(
-    `SELECT id, group_key, kind, severity, status, message FROM exceptions WHERE status <> 'resolved'`,
+    `SELECT id, group_key, kind, severity, status, message FROM exceptions WHERE status <> 'resolved'${focus ? ' AND group_key = $1' : ''}`,
+    focus ? [focusGroupKey] : [],
   )
   const lastRun = await client.query<{ status: string; error_code: string | null }>(
     'SELECT status, error_code FROM source_runs ORDER BY started_at DESC LIMIT 1',
@@ -413,7 +441,15 @@ export async function loadState(client: PoolClient): Promise<WorkState> {
   }
 }
 
-export function sourceProblem(state: WorkState, now: Date): string | null {
+export function sourceProblem(
+  state: {
+    lastRunStatus: string | null
+    lastSuccessAt: string | null
+    latest: { validationStatus: string } | null
+    settings: { staleAfterMinutes: number }
+  },
+  now: Date,
+): string | null {
   if (state.lastRunStatus === 'failed') return 'SOURCE_UNAVAILABLE'
   if (!state.lastSuccessAt || state.lastRunStatus !== 'succeeded') return 'SOURCE_NOT_READY'
   if (now.getTime() - new Date(state.lastSuccessAt).getTime() > state.settings.staleAfterMinutes * 60_000) return 'SOURCE_STALE'
@@ -473,7 +509,6 @@ export function projectGroups(state: WorkState, now: Date, basis: 'baseline' | '
       airportCode: group.airportCode,
       stayDate: group.stayDate,
       status: resolveQueueStatus({
-        hasBaseline: Boolean(baseline),
         changeCount: changes.length,
         blocking,
         draftStatus: openDraft?.status ?? null,

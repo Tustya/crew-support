@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readFirstSheet, XlsxLimitError } from '../src/domain/xlsx.ts'
+import { readFirstSheet, readFirstSheetAsync, XlsxLimitError } from '../src/domain/xlsx.ts'
 import { sheetWorkbook, zipEntries } from './support/xlsx-bytes.ts'
 
 const ENTRY_LIMIT = 16 * 1024 * 1024
@@ -8,6 +8,18 @@ const ENTRY_LIMIT = 16 * 1024 * 1024
 function assertLimited(bytes: Buffer): void {
   assert.throws(() => readFirstSheet(bytes), (error: unknown) => error instanceof XlsxLimitError)
 }
+
+test('a large sheet parse lets the event loop run', async () => {
+  const rows = Array.from({ length: 400 }, (_, index) => `<row r="${index + 1}"><c r="A${index + 1}" t="inlineStr"><is><t>${'я'.repeat(40)}</t></is></c></row>`).join('')
+  let yielded = false
+  const pending = readFirstSheetAsync(sheetWorkbook(rows))
+  await new Promise((resolve) => setImmediate(() => {
+    yielded = true
+    resolve(undefined)
+  }))
+  assert.equal(yielded, true)
+  assert.equal((await pending).length, 400)
+})
 
 test('a small sheet is read without expanding the grid', () => {
   const rows = readFirstSheet(sheetWorkbook('<row r="1"><c r="A1"><v>7</v></c></row>'))

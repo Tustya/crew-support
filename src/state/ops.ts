@@ -3,7 +3,6 @@ import {
   applyClock,
   archiveNotification,
   baselinePayload,
-  baselinesFrom,
   makeActivity,
   makeDraft,
   patchLatest,
@@ -114,26 +113,6 @@ export function importDemoSample(data: DemoData): DemoData {
     'Снимок импортирован',
     'Демо-образец заменил источник. Проверка открытых писем снята.',
     'info',
-  )
-}
-
-export function establishBaseline(data: DemoData): DemoData {
-  const series = data.snapshots
-    .filter((snapshot) => snapshot.seriesId === data.seriesId)
-    .sort((left, right) => left.sequence - right.sequence)
-  const source = series[0]
-  if (!source) return data
-  return prepareDueGroups(
-    record(
-      {
-        ...data,
-        baselines: baselinesFrom(source, 'manual_base', data.clockIso),
-        baselineEstablished: true,
-      },
-      'База выбрана',
-      'В этом сценарии исходная рассылка уже выполнена.',
-      'ok',
-    ),
   )
 }
 

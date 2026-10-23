@@ -8,6 +8,7 @@ import { matchByIdentity } from '../src/domain/identity.ts'
 import { letterRows } from '../src/domain/letter.ts'
 import { baselineBookingsFromPayload, selectConfirmedPayload, type StoredPayload } from '../src/domain/payload.ts'
 import { assignRooms } from '../src/domain/rooms.ts'
+import { resolveQueueStatus } from '../src/domain/status.ts'
 import { templateProblems, defaultTemplate } from '../src/domain/templates.ts'
 import { nextQuietTimer } from '../src/domain/timer.ts'
 import { localIsoDate, stayInScope } from '../src/domain/time.ts'
@@ -95,6 +96,17 @@ test('doubles pair inside one gender and the letter does not publish gender', ()
   assert.equal(rows.length, 2)
   assert.equal(rows.every((row) => !('gender' in row)), true)
   assert.equal(JSON.stringify(rows).includes('<'), false)
+})
+
+test('загрузка без отправной не требует отметить снимок начальным', () => {
+  const status = resolveQueueStatus({
+    changeCount: 0,
+    blocking: false,
+    draftStatus: null,
+    drifted: false,
+    preparing: false,
+  })
+  assert.equal(status, 'unchanged')
 })
 
 test('a letter room type outside SGL and DBL is rejected', () => {

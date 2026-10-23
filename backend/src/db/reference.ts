@@ -27,6 +27,7 @@ export async function resetBusinessData(pool: Pool): Promise<void> {
       drafts,
       change_events,
       exceptions,
+      queue_views,
       work_groups,
       snapshot_bookings,
       snapshots,
@@ -50,6 +51,7 @@ export async function resetBusinessData(pool: Pool): Promise<void> {
       template_version = 1,
       row_version = 1,
       sender_name = 'Crew Support',
+      data_generation = 0,
       updated_at = now()
       WHERE id = 1`)
     await client.query(`INSERT INTO integration_configs (adapter_key, status, safe_endpoint_label)

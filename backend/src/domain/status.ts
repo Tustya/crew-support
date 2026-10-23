@@ -11,7 +11,6 @@ export type QueueStatus =
   | 'needs_decision'
 
 export function resolveQueueStatus(input: {
-  hasBaseline: boolean
   changeCount: number
   blocking: boolean
   draftStatus: string | null
@@ -20,7 +19,6 @@ export function resolveQueueStatus(input: {
 }): QueueStatus {
   if (input.preparing) return 'preparing'
   if (input.blocking) return 'needs_decision'
-  if (!input.hasBaseline) return 'needs_baseline'
   if (input.changeCount === 0) {
     if (input.draftStatus === 'handed_off') return 'handed_off'
     if (input.draftStatus === 'sent' || input.draftStatus === 'external_confirmed') return 'sent'

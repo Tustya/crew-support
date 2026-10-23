@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { toJournalEntry, toNotice, toWorkGroup } from './adapters'
-import type { AuditDto, BookingDto, DirectoryHotel, GroupDto, NotificationDto } from './types'
+import type { AuditDto, DirectoryHotel, GroupDto, NotificationDto } from './types'
 
 const hotel: DirectoryHotel = {
   id: 'h-1',
@@ -22,24 +22,6 @@ const hotel: DirectoryHotel = {
   sourceCc: [],
 }
 
-const booking = (arrivalLocalTime: string): BookingDto => ({
-  id: 'b-ivan',
-  crewId: null,
-  hotelId: 'h-1',
-  airportCode: 'SVX',
-  stayDate: '2026-10-09',
-  fullName: 'Иванов И.И.',
-  arrivalFlight: '0113',
-  arrivalLocalDate: '2026-10-09',
-  arrivalLocalTime,
-  departureFlight: '0114',
-  departureLocalDate: '2026-10-10',
-  departureLocalTime: '08:10',
-  roomType: 'SGL',
-  recordStatus: 'active',
-  replacementOf: null,
-})
-
 const group: GroupDto = {
   id: 'g-1',
   groupKey: 'h-1|SVX|2026-10-09',
@@ -48,15 +30,22 @@ const group: GroupDto = {
   stayDate: '2026-10-09',
   status: 'waiting',
   changeCount: 1,
-  changes: [{ entityKey: 'b-ivan', groupKey: 'h-1|SVX|2026-10-09', linkedGroupKey: null, linkKey: null, kind: 'arrival', before: booking('12:40'), after: booking('13:10'), changedFields: ['arrivalLocalTime'] }],
+  changes: [{
+    entityKey: 'b-ivan',
+    groupKey: 'h-1|SVX|2026-10-09',
+    kind: 'arrival',
+    fullName: 'Иванов И.И.',
+    linkedGroupKey: null,
+    replacement: false,
+    fields: [{ field: 'arrivalLocalTime', label: 'Время прилёта', before: '12:40', after: '13:10' }],
+  }],
   lastMeaningfulChangeAt: '2026-10-09T05:00:00.000Z',
   dueAt: '2026-10-09T05:10:00.000Z',
   draftId: null,
   draftStatus: null,
   revision: null,
   exceptions: [],
-  latestBookings: [booking('13:10')],
-  baselineBookings: [booking('12:40')],
+  crewNames: ['Иванов И.И.'],
 }
 
 describe('api adapters', () => {
@@ -67,6 +56,7 @@ describe('api adapters', () => {
     expect(view.changes[0]?.fields).toEqual([{ field: 'arrivalLocalTime', label: 'Время прилёта', before: '12:40', after: '13:10' }])
     expect(view.changes[0]?.detectedAt).toBe('2026-10-09T05:00:00.000Z')
     expect(view.crewNames).toEqual(['Иванов И.И.'])
+    expect(view.crewNames).not.toContain('undefined')
   })
 
   it('keeps an unmapped group visible with a readable placeholder hotel', () => {

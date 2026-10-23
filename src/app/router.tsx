@@ -1,10 +1,12 @@
+import { lazy } from 'react'
 import { Navigate, createBrowserRouter } from 'react-router-dom'
-import { CorrectionsPage } from '../features/corrections/CorrectionsPage'
-import { HistoryPage } from '../features/history/HistoryPage'
-import { MailPage } from '../features/mail/MailPage'
-import { OverviewPage } from '../features/overview/OverviewPage'
-import { SettingsPage } from '../features/settings/SettingsPage'
 import { Shell } from '../ui/Shell'
+
+const OverviewPage = lazy(() => import('../features/overview/OverviewPage').then((module) => ({ default: module.OverviewPage })))
+const CorrectionsPage = lazy(() => import('../features/corrections/CorrectionsPage').then((module) => ({ default: module.CorrectionsPage })))
+const MailPage = lazy(() => import('../features/mail/MailPage').then((module) => ({ default: module.MailPage })))
+const HistoryPage = lazy(() => import('../features/history/HistoryPage').then((module) => ({ default: module.HistoryPage })))
+const SettingsPage = lazy(() => import('../features/settings/SettingsPage').then((module) => ({ default: module.SettingsPage })))
 
 export const router = createBrowserRouter([
   {
